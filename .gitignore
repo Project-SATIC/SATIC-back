@@ -1,3 +1,8 @@
+### Compiled Java / Build Output ###
+*.class
+bin/
+bin-test/
+
 ### IntelliJ IDEA ###
 out/
 !**/src/main/**/out/
@@ -12,12 +17,6 @@ out/
 .settings
 .springBeans
 .sts4-cache
-bin/
-bin-test/
-!**/src/main/**/bin/
-bin-test/
-!**/src/test/**/bin/
-bin-test/
 
 ### NetBeans ###
 /nbproject/private/
@@ -31,7 +30,6 @@ bin-test/
 
 ### Mac OS ###
 .DS_Store
-
 
 ### SQLite / Local Data ###
 data/
