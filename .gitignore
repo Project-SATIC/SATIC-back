@@ -13,8 +13,11 @@ out/
 .springBeans
 .sts4-cache
 bin/
+bin-test/
 !**/src/main/**/bin/
+bin-test/
 !**/src/test/**/bin/
+bin-test/
 
 ### NetBeans ###
 /nbproject/private/
@@ -28,3 +31,11 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+
+### SQLite / Local Data ###
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
