@@ -43,4 +43,17 @@ Rodamos o motor Java e o TypeScript em 6 cenários: a base real e casos de estre
 2. API Express, incluindo a rota de confirmação.
 3. Ligar o front (`samyr-front-dev`) à API, no lugar dos dados de exemplo.
 
-**Como testar:** `cd ts` e depois `npm test`. É preciso ter o Node 22.18 ou mais recente, e não há dependências para instalar.
+## Como rodar a nova versão
+
+É preciso ter o **Node.js 22.18 ou mais recente** (confira com `node -v`). Não há pacotes para instalar. Os comandos são os mesmos no Windows, no Linux e no macOS:
+
+```powershell
+git checkout ts-back-dev
+cd ts
+npm test          # 36 testes; o esperado é "pass 36" e "fail 0"
+npm run motor     # roda o motor na base 2026.2 e imprime as alocações em JSON
+```
+
+No PowerShell do Windows, se o `npm` for bloqueado com o erro *"a execução de scripts foi desabilitada"*, use `npm.cmd test` e `npm.cmd run motor`.
+
+Para conferir a versão Java original, siga a seção "Como Compilar e Executar" do [README](../README.md).

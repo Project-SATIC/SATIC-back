@@ -2,6 +2,8 @@
 
 Back-end em Java + SQLite do **SATIC** (*Sistema de Alocação de Turmas do Instituto de Computação — UFAL*), estruturado com foco inicial na **fase pós-oferta acadêmica** (horários importados do SIGAA e alocação otimizada de espaços físicos do Bloco IC, Bloco 12 e salas cedidas pelo IM).
 
+> **Migração em andamento (branch `ts-back-dev`):** o back-end está sendo portado para **TypeScript + Express**, na pasta [`ts/`](ts/). Os motivos e o andamento estão em [`docs/registro-migracao-typescript.md`](docs/registro-migracao-typescript.md), e as instruções para rodar estão em [Versão TypeScript](#versão-typescript-ts). O código Java abaixo continua funcionando, e é a referência usada para conferir os resultados da nova versão.
+
 ---
 
 ## Estrutura do Projeto
@@ -53,6 +55,37 @@ java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "bin-test;bin;lib/*" 
 ### Linux / macOS (Bash)
 
 Substitua `;` por `:` no classpath (`-cp "bin:lib/*"` e `-cp "bin-test:bin:lib/*"`), passando `$(find src -name "*.java")` para o `javac`.
+
+---
+
+## Versão TypeScript (`ts/`)
+
+Requisito: **Node.js 22.18 ou mais recente** (confira com `node -v`). Não é preciso instalar nenhum pacote: o Node executa os arquivos `.ts` diretamente.
+
+### Windows (PowerShell), Linux e macOS
+
+**1. Entrar na pasta da nova versão:**
+```powershell
+cd ts
+```
+
+**2. Rodar os testes** (parser SIGAA, validador, motor e comparação com o resultado do Java):
+```powershell
+npm test
+```
+O resultado esperado termina em `pass 36` e `fail 0`.
+
+> No PowerShell do Windows, se aparecer o erro *"a execução de scripts foi desabilitada neste sistema"*, use `npm.cmd test` e `npm.cmd run motor`, ou rode direto com o Node: `node --test "test/**/*.test.ts"` e `node tools/rodar-motor.ts`.
+
+**3. Rodar o motor na base real 2026.2** (imprime as alocações em JSON):
+```powershell
+npm run motor
+```
+A primeira linha mostra um resumo como `alocadas=86 pendentes=0 ... completo=true`. Para salvar o JSON em um arquivo, use `npm run motor > saida.json`.
+
+Opcionalmente, dá para simular cenários: `node tools/rodar-motor.ts "sem=Auditório IC"` remove uma sala, e `node tools/rodar-motor.ts "indisp=2024389:TER:T:34"` adiciona uma indisponibilidade a um docente.
+
+Detalhes da estrutura e de como regerar os gabaritos do Java: [`ts/README.md`](ts/README.md).
 
 ---
 
