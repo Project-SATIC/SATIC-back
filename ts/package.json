@@ -1,0 +1,14 @@
+{
+  "name": "satic-back-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Porte do SATIC-back (Java) para TypeScript: parser SIGAA, validador RN-01..RN-04 e motor StateSpaceSearch.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "motor": "node tools/rodar-motor.ts"
+  }
+}
