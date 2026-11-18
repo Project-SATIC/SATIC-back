@@ -12,13 +12,19 @@
     "motor": "node tools/rodar-motor.ts",
     "migrate": "node src/db/run-migrations.ts",
     "migrate:reset": "node src/db/run-migrations.ts --reset",
-    "db:seed": "node src/seed/db-seeder.ts"
+    "db:seed": "node src/seed/db-seeder.ts",
+    "start": "node src/api/server.ts",
+    "dev": "node --watch src/api/server.ts"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^18.0.10",
+    "express": "^5.3.0",
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/pg": "^8.23.1"
   }
 }
