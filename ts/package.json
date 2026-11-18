@@ -11,7 +11,8 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "motor": "node tools/rodar-motor.ts",
     "migrate": "node src/db/run-migrations.ts",
-    "migrate:reset": "node src/db/run-migrations.ts --reset"
+    "migrate:reset": "node src/db/run-migrations.ts --reset",
+    "db:seed": "node src/seed/db-seeder.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.10",
