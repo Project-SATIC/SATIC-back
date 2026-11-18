@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { AlocacaoRepository } from "../../db/repositories/index.ts";
 import { AlocadorService } from "../../motor/alocador.service.ts";
+import { RemanejamentoService } from "../../motor/remanejamento.service.ts";
 
 export const alocacoesRouter = Router();
 const repo = new AlocacaoRepository();
@@ -37,4 +38,33 @@ alocacoesRouter.post("/gerar", async (req: Request, res: Response) => {
         res.status(status).json({ erro: "Falha na geração de alocações", detalhes: msg });
     }
 });
+
+alocacoesRouter.post("/validar", async (req: Request, res: Response) => {
+    try {
+        const service = new RemanejamentoService();
+        const resultado = await service.validar(req.body || {});
+        res.json(resultado);
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const status = msg.includes("não encontrada") ? 404 : 400;
+        res.status(status).json({ erro: "Erro ao validar alocação", detalhes: msg });
+    }
+});
+
+alocacoesRouter.post("/confirmar", async (req: Request, res: Response) => {
+    try {
+        const service = new RemanejamentoService();
+        const resultado = await service.confirmar(req.body || {});
+        if (!resultado.sucesso) {
+            res.status(409).json(resultado);
+            return;
+        }
+        res.json(resultado);
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const status = msg.includes("não encontrada") ? 404 : 400;
+        res.status(status).json({ erro: "Erro ao confirmar alocação", detalhes: msg });
+    }
+});
+
 

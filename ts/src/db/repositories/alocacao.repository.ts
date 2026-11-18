@@ -117,6 +117,29 @@ export class AlocacaoRepository {
         return this.mapearAlocacoes(res.rows);
     }
 
+    async buscarPorTurmaId(turmaId: number): Promise<Alocacao | null> {
+        const sql = `
+            SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
+                   s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
+                   s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
+                   t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
+                   t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
+                   t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
+                   t.horario_sigaa AS t_horario,
+                   d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
+            FROM alocacao a
+            JOIN sala s ON a.id_sala = s.id
+            JOIN turma t ON a.id_turma = t.id
+            JOIN disciplina d ON t.id_disciplina = d.codigo
+            WHERE a.id_turma = $1
+            ORDER BY a.id DESC
+            LIMIT 1;
+        `;
+        const res = await query<AlocacaoRow>(sql, [turmaId]);
+        if (res.rows.length === 0) return null;
+        return this.mapearAlocacoes(res.rows)[0] || null;
+    }
+
     async atualizarSalaEHorario(
         alocacaoId: number,
         novaSalaId: number,
