@@ -9,6 +9,15 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
-    "motor": "node tools/rodar-motor.ts"
+    "motor": "node tools/rodar-motor.ts",
+    "migrate": "node src/db/run-migrations.ts",
+    "migrate:reset": "node src/db/run-migrations.ts --reset"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
   }
 }
