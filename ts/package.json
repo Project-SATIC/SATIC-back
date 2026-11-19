@@ -14,7 +14,9 @@
     "migrate:reset": "node src/db/run-migrations.ts --reset",
     "db:seed": "node src/seed/db-seeder.ts",
     "start": "node src/api/server.ts",
-    "dev": "node --watch src/api/server.ts"
+    "dev": "node --watch src/api/server.ts",
+    "local": "node tools/banco-local.ts --com-api",
+    "db:local": "node tools/banco-local.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -23,6 +25,8 @@
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite-socket": "^0.2.19",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/pg": "^8.23.1"

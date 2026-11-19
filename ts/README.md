@@ -10,6 +10,16 @@ Back-end do **SATIC** (*Sistema de Alocação de Turmas do Instituto de Computa�
 * **Node.js 22.18+** (suporte nativo a execução TypeScript via type stripping).
 * **PostgreSQL 16+** (instalado localmente ou via Docker).
 
+### Atalho: banco local sem Docker nem instalação
+```powershell
+cd ts
+npm install
+npm run local       # PostgreSQL (PGlite) + migrations + seed (se vazio) + API em http://localhost:3001
+```
+* Os dados ficam em `ts/.pglite/` (fora do git) e sobrevivem a reinícios. `npm run local -- --resetar` recria tudo do zero.
+* `npm run db:local` sobe só o banco (porta 5432, ou `-- --porta=5433`). Para usar com `npm start` em outro terminal, defina `PGPOOL_MAX=1`.
+* O PGlite é um PostgreSQL 18 real compilado para WebAssembly, mas com uma única sessão. Serve para desenvolvimento e para integrar o front, não para produção. Para produção, use os passos abaixo.
+
 ### 2. Configurar o Banco de Dados (PostgreSQL)
 Você pode subir o PostgreSQL via Docker na raiz do projeto:
 ```powershell
@@ -28,8 +38,8 @@ PGDATABASE=satic
 Dentro da pasta `ts/`:
 ```powershell
 cd ts
-npm run migrate     # Cria as 7 tabelas do modelo lógico no PostgreSQL
-npm run db:seed     # Povoa o banco com as salas, docentes e ofertas 2026.2
+npm run migrate     # 001: 7 tabelas do modelo lógico; 002: restrições de integridade (1 alocação por turma, status, CHECKs)
+npm run db:seed     # Salas, docentes e ofertas 2026.2 + as 2 reservas EXTERNA_FIXA (IF0001-05, FALE0002-03)
 ```
 
 ### 4. Iniciar a API Express
@@ -41,7 +51,7 @@ npm run dev
 
 ### 5. Rodar a Suíte de Testes
 ```powershell
-npm test            # Executa todos os 54 testes automatizados
+npm test            # 98 testes; não precisa instalar PostgreSQL (test/postgres-real.test.ts sobe um PostgreSQL real em memória com o PGlite)
 ```
 
 ---
@@ -62,6 +72,18 @@ Os contratos detalhados de requisição, resposta e guia de integração para o 
 | `GET` | `/api/professores` | Lista docentes e restrições de indisponibilidade (RN-02) |
 | `GET` | `/api/disciplinas` | Lista disciplinas da matriz |
 | `GET` | `/api/alocacoes` | Lista alocações salvas (filtro: `semestre`) |
-| `POST` | `/api/alocacoes/gerar` | Executa o motor (MRV + Best-Fit) e persiste alocações |
+| `POST` | `/api/alocacoes/gerar` | Executa o motor (MRV + Best-Fit) e troca os RASCUNHO numa transação, preservando EXTERNA_FIXA e DEFINITIVA |
 | `POST` | `/api/alocacoes/validar` | Validação ágil de drag-and-drop sem persistir |
 | `POST` | `/api/alocacoes/confirmar` | Valida e salva o remanejamento (retorna 409 se inválido) |
+
+---
+
+## 🧭 Regras de persistência e robustez
+
+* **Uma alocação por turma** (`UNIQUE (id_turma)` na migration 002). Status: `RASCUNHO` (proposta do motor), `DEFINITIVA` (confirmada pela secretaria) e `EXTERNA_FIXA` (turma de outro instituto em sala do IC).
+* **`/gerar` não apaga reservas externas nem remanejamentos confirmados**: só os `RASCUNHO` são trocados, numa única transação.
+* **Lock por semestre** (`pg_advisory_xact_lock`): `/gerar` e `/confirmar` do mesmo semestre nunca gravam em paralelo, nem entre processos.
+* **RN-01/RN-02 com dados do banco**: toda turma carregada (inclusive dentro de uma alocação) vem com docentes e indisponibilidades, hidratados em lote.
+* **Ordenação binária** (`COLLATE "C"`) nas consultas que alimentam o motor, para o resultado não depender da collation do servidor e bater com o Java.
+* **Erros**: 400 para entrada inválida, 404 para recurso inexistente, 409 para regra violada, 503 para banco indisponível (`src/erros.ts` + handler em `src/api/app.ts`).
+* **`CORS_ORIGIN`** (opcional, no `.env`): lista de origens aceitas, separadas por vírgula. Sem ela, qualquer origem é aceita.

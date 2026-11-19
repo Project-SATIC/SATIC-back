@@ -4,21 +4,24 @@ import pg from "pg";
 const { Pool } = pg;
 
 function createPoolConfig(): pg.PoolConfig {
+    // PGPOOL_MAX: tamanho do pool (padrão 10). Os testes usam 1 porque o PGlite tem uma única sessão.
+    const comuns: pg.PoolConfig = {
+        max: Number(process.env.PGPOOL_MAX || 10),
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+    };
+
     if (process.env.DATABASE_URL) {
-        return {
-            connectionString: process.env.DATABASE_URL,
-        };
+        return { ...comuns, connectionString: process.env.DATABASE_URL };
     }
 
     return {
+        ...comuns,
         host: process.env.PGHOST || "localhost",
         port: Number(process.env.PGPORT || 5432),
         user: process.env.PGUSER || "postgres",
         password: process.env.PGPASSWORD || "postgres",
         database: process.env.PGDATABASE || "satic",
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
     };
 }
 
@@ -63,16 +66,20 @@ export type ExecutorTransacional = <T>(fn: (db: Executor) => Promise<T>) => Prom
 /** Executa `fn` dentro de BEGIN/COMMIT, com ROLLBACK em caso de erro. */
 export async function comTransacao<T>(fn: (db: Executor) => Promise<T>): Promise<T> {
     const client = await getClient();
+    let conexaoQuebrada = false;
     try {
         await client.query("BEGIN;");
         const resultado = await fn(client as Executor);
         await client.query("COMMIT;");
         return resultado;
     } catch (err) {
-        await client.query("ROLLBACK;").catch(() => undefined);
+        await client.query("ROLLBACK;").catch(() => {
+            conexaoQuebrada = true;
+        });
         throw err;
     } finally {
-        client.release();
+        // Conexão que nem o ROLLBACK aceita é descartada em vez de voltar ao pool
+        client.release(conexaoQuebrada);
     }
 }
 
