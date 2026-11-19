@@ -5,8 +5,10 @@
  * disco (`ts/.pglite/`, fora do git), exposto numa porta TCP local para o driver `pg`.
  * Na partida aplica as migrations pendentes e, se o banco estiver vazio, roda o seed 2026.2.
  *
- *   npm run local       banco + API Express em http://localhost:3001 (um único terminal)
- *   npm run db:local    só o banco (para usar com `npm start` em outro terminal, com PGPOOL_MAX=1)
+ *   npm run local          banco + API Express em http://localhost:3001 (um único terminal)
+ *   npm run local:amostra  idem, só com 17 turmas reais para testes manuais (pasta ts/.pglite-amostra)
+ *   npm run db:local       só o banco (para usar com `npm start` em outro terminal, com PGPOOL_MAX=1)
+ * Banco recém-criado: aplica migrations, roda o seed e já gera a grade inicial com o motor.
  *
  * Opções: --porta=N (porta do banco), --dados=.pglite (pasta), --resetar (apaga e recria tudo).
  * Com `npm run local` o banco usa uma porta livre qualquer (só a API do mesmo processo o acessa),
@@ -36,7 +38,9 @@ function opcao(nome: string): string | undefined {
 
 const comApi = process.argv.includes("--com-api");
 const resetar = process.argv.includes("--resetar");
-const pastaDados = path.resolve(RAIZ_TS, opcao("dados") ?? ".pglite");
+// Amostra de 17 turmas reais para testes manuais, em pasta própria (o banco completo não é tocado)
+const amostra = process.argv.includes("--amostra");
+const pastaDados = path.resolve(RAIZ_TS, opcao("dados") ?? (amostra ? ".pglite-amostra" : ".pglite"));
 const arquivoTrava = `${pastaDados}.lock`;
 const portaApi = Number(process.env.PORT || 3001);
 // Porta do banco: a pedida; senão 5432 só no modo "só banco" (o npm start de outro terminal precisa dela)
@@ -193,11 +197,15 @@ async function main(): Promise<void> {
 
     const { rows } = await query<{ n: number }>("SELECT COUNT(*)::int AS n FROM turma;");
     if (rows[0].n === 0) {
-        console.log("[SATIC-LOCAL] Banco vazio: rodando o seed 2026.2...");
-        const r = await executarSeed();
+        console.log(`[SATIC-LOCAL] Banco vazio: rodando o seed 2026.2${amostra ? " (AMOSTRA para testes manuais)" : ""}...`);
+        const r = await executarSeed({ amostra });
         console.log(`[SATIC-LOCAL] Seed: ${r.turmas} turmas, ${r.salas} salas, ${r.reservasExternas} reservas EXTERNA_FIXA.`);
+        // Grade inicial pelo motor de salas, para a interface já abrir preenchida
+        const { AlocadorService } = await import("../src/motor/alocador.service.ts");
+        const g = await new AlocadorService().gerarAlocacao({ semestre: "2026.2" });
+        console.log(`[SATIC-LOCAL] Grade inicial gerada: ${g.resumo.alocadas} de ${g.resumo.totalTurmas} turmas alocadas${g.resumo.pendentes ? `, ${g.resumo.pendentes} pendente(s)` : ""}.`);
     } else {
-        console.log(`[SATIC-LOCAL] Banco já povoado (${rows[0].n} turmas). Use --resetar para recriar do zero.`);
+        console.log(`[SATIC-LOCAL] Banco já povoado (${rows[0].n} turmas${amostra ? ", amostra" : ""}). Use --resetar para recriar do zero.`);
     }
 
     let encerrando = false;

@@ -4,3 +4,5 @@ tools/out/
 .env
 .pglite/
 .pglite.lock
+.pglite-*.lock
+.pglite-*/

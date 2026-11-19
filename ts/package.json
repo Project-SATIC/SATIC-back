@@ -16,7 +16,8 @@
     "start": "node src/api/server.ts",
     "dev": "node --watch src/api/server.ts",
     "local": "node tools/banco-local.ts --com-api",
-    "db:local": "node tools/banco-local.ts"
+    "db:local": "node tools/banco-local.ts",
+    "local:amostra": "node tools/banco-local.ts --com-api --amostra"
   },
   "dependencies": {
     "cors": "^2.8.6",

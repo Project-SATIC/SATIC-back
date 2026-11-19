@@ -9,8 +9,14 @@ import {
 import { montarProblema } from "../motor/montar-problema.ts";
 import type { Sala } from "../shared/tipos.ts";
 import { carregarBase2026_2 } from "./seeder.ts";
+import { AMOSTRA_2026_2, ofertasDaAmostra } from "./amostra.ts";
 
-export async function executarSeed(): Promise<{
+export interface OpcoesSeed {
+    /** Só as 17 turmas da amostra para testes manuais (src/seed/amostra.ts); as 19 salas continuam. */
+    amostra?: boolean;
+}
+
+export async function executarSeed(opcoes: OpcoesSeed = {}): Promise<{
     salas: number;
     disciplinas: number;
     professores: number;
@@ -23,8 +29,10 @@ export async function executarSeed(): Promise<{
     const turmaRepo = new TurmaRepository();
     const alocacaoRepo = new AlocacaoRepository();
 
-    console.log("[SATIC-SEED] Carregando dados de 2026.2 em memória...");
-    const base = carregarBase2026_2();
+    console.log(opcoes.amostra
+        ? `[SATIC-SEED] Carregando a AMOSTRA de 2026.2 (${AMOSTRA_2026_2.length} turmas reais para testes manuais)...`
+        : "[SATIC-SEED] Carregando dados de 2026.2 em memória...");
+    const base = opcoes.amostra ? carregarBase2026_2(ofertasDaAmostra()) : carregarBase2026_2();
 
     console.log(`[SATIC-SEED] Inserindo ${base.salas.length} salas...`);
     // Os ids das salas no PostgreSQL podem diferir dos ids da base em memória: guarda os do banco
@@ -86,7 +94,7 @@ async function main(): Promise<void> {
     }
 
     try {
-        const resumo = await executarSeed();
+        const resumo = await executarSeed({ amostra: process.argv.includes("--amostra") });
         console.log("\n[SATIC-SEED] Seed concluído com sucesso!");
         console.log(`  - Salas: ${resumo.salas}`);
         console.log(`  - Disciplinas: ${resumo.disciplinas}`);

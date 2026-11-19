@@ -14,9 +14,12 @@ Back-end do **SATIC** (*Sistema de Alocação de Turmas do Instituto de Computa�
 ```powershell
 cd ts
 npm install
-npm run local       # PostgreSQL (PGlite) + migrations + seed (se vazio) + API em http://localhost:3001
+npm run local          # PostgreSQL (PGlite) + migrations + seed (se vazio) + grade inicial + API em http://localhost:3001
+npm run local:amostra  # o mesmo, só com 17 turmas reais para testes manuais (dados em ts/.pglite-amostra)
 ```
 * Os dados ficam em `ts/.pglite/` (fora do git) e sobrevivem a reinícios. `npm run local -- --resetar` recria tudo do zero.
+* Num banco recém-criado, o script já gera a grade inicial com o motor. Não é preciso chamar `/api/alocacoes/gerar` à mão.
+* **Amostra para testes manuais** (`src/seed/amostra.ts`): 17 turmas reais de 2026.2, todas as 19 salas e as 2 reservas externas. Cada turma está lá para facilitar o teste de uma regra: indisponibilidade (Ranilson, SEX T5–T6), choque docente, co-docência, 4 aulas num dia, horário diferente em cada dia, sábado, turma conjunta grande, IA à noite e reservas fixas. Fica numa pasta própria, então o banco completo não é tocado. Para rodar a amostra junto do banco completo, use outra porta (`$env:PORT=3101; npm run local:amostra`) e abra o front com `?api=http://localhost:3101`. Num PostgreSQL de verdade: `npm run db:seed -- --amostra`.
 * `npm run db:local` sobe só o banco (porta 5432, ou `-- --porta=5433`). Para usar com `npm start` em outro terminal, defina `PGPOOL_MAX=1`.
 * Com `npm run local` o banco usa uma porta livre qualquer (só a API do mesmo processo o acessa), então não briga com um PostgreSQL instalado na 5432.
 * **Uma instância por vez.** Dois bancos abrindo `ts/.pglite/` ao mesmo tempo poderiam corromper os dados. Por isso o script cria a trava `ts/.pglite.lock` (com o PID) e confere as portas antes de abrir a pasta. Se já houver um SATIC local rodando, ele avisa, diz como usar ou encerrar o anterior e não inicia. Uma trava de processo que já terminou é descartada sozinha.
