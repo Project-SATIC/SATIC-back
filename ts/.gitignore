@@ -3,3 +3,4 @@ tools/out/
 *.db
 .env
 .pglite/
+.pglite.lock

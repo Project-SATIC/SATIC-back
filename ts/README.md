@@ -18,6 +18,12 @@ npm run local       # PostgreSQL (PGlite) + migrations + seed (se vazio) + API e
 ```
 * Os dados ficam em `ts/.pglite/` (fora do git) e sobrevivem a reinícios. `npm run local -- --resetar` recria tudo do zero.
 * `npm run db:local` sobe só o banco (porta 5432, ou `-- --porta=5433`). Para usar com `npm start` em outro terminal, defina `PGPOOL_MAX=1`.
+* Com `npm run local` o banco usa uma porta livre qualquer (só a API do mesmo processo o acessa), então não briga com um PostgreSQL instalado na 5432.
+* **Uma instância por vez.** Dois bancos abrindo `ts/.pglite/` ao mesmo tempo poderiam corromper os dados. Por isso o script cria a trava `ts/.pglite.lock` (com o PID) e confere as portas antes de abrir a pasta. Se já houver um SATIC local rodando, ele avisa, diz como usar ou encerrar o anterior e não inicia. Uma trava de processo que já terminou é descartada sozinha.
+* Fechar o terminal nem sempre encerra o processo. Se a API continuar respondendo em `:3001`, encerre-a com:
+  ```powershell
+  Stop-Process -Id (Get-NetTCPConnection -LocalPort 3001 -State Listen).OwningProcess
+  ```
 * O PGlite é um PostgreSQL 18 real compilado para WebAssembly, mas com uma única sessão. Serve para desenvolvimento e para integrar o front, não para produção. Para produção, use os passos abaixo.
 
 ### 2. Configurar o Banco de Dados (PostgreSQL)

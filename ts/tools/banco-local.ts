@@ -8,13 +8,20 @@
  *   npm run local       banco + API Express em http://localhost:3001 (um único terminal)
  *   npm run db:local    só o banco (para usar com `npm start` em outro terminal, com PGPOOL_MAX=1)
  *
- * Opções: --porta=5432 (porta do banco), --dados=.pglite (pasta), --resetar (apaga e recria tudo).
+ * Opções: --porta=N (porta do banco), --dados=.pglite (pasta), --resetar (apaga e recria tudo).
+ * Com `npm run local` o banco usa uma porta livre qualquer (só a API do mesmo processo o acessa),
+ * para não brigar com um PostgreSQL instalado na 5432. Com `npm run db:local` o padrão é 5432.
+ *
+ * Só uma instância por pasta de dados: dois PGlite abrindo a mesma pasta podem corromper o banco.
+ * A trava fica em `<pasta>.lock` (ex.: ts/.pglite.lock) com o PID de quem está rodando.
  *
  * Limitações do PGlite (só desenvolvimento, não produção): uma única sessão, por isso o pool
  * da API fica com 1 conexão; e o adaptador TCP fecha a conexão após um erro de SQL, que o pool
  * reabre sozinho.
  */
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
@@ -22,50 +29,156 @@ import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 
 const RAIZ_TS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function opcao(nome: string, padrao: string): string {
+function opcao(nome: string): string | undefined {
     const arg = process.argv.find((a) => a.startsWith(`--${nome}=`));
-    return arg ? arg.slice(nome.length + 3) : padrao;
+    return arg ? arg.slice(nome.length + 3) : undefined;
 }
 
 const comApi = process.argv.includes("--com-api");
 const resetar = process.argv.includes("--resetar");
-const porta = Number(opcao("porta", process.env.PGPORT || "5432"));
-const pastaDados = path.resolve(RAIZ_TS, opcao("dados", ".pglite"));
+const pastaDados = path.resolve(RAIZ_TS, opcao("dados") ?? ".pglite");
+const arquivoTrava = `${pastaDados}.lock`;
+const portaApi = Number(process.env.PORT || 3001);
+// Porta do banco: a pedida; senão 5432 só no modo "só banco" (o npm start de outro terminal precisa dela)
+const portaPedida = opcao("porta") ?? (comApi ? undefined : process.env.PGPORT || "5432");
 
-if (!Number.isInteger(porta) || porta <= 0 || porta > 65535) {
-    console.error(`[SATIC-LOCAL] Porta inválida: ${porta}`);
+function sair(mensagem: string): never {
+    console.error(`[SATIC-LOCAL] ${mensagem}`);
     process.exit(1);
 }
 
-// O pool da API e dos scripts aponta para este banco (sobrepõe o .env)
-delete process.env.DATABASE_URL;
-Object.assign(process.env, {
-    PGHOST: "127.0.0.1",
-    PGPORT: String(porta),
-    PGUSER: "postgres",
-    PGPASSWORD: "postgres",
-    PGDATABASE: "postgres",
-    PGPOOL_MAX: "1",
-});
+/** O processo ainda existe? (sinal 0 só testa; funciona no Windows e no Linux) */
+function processoVivo(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
+/**
+ * Alguém atende nessa porta? Tentar conectar é o teste confiável: no Windows, abrir a mesma porta
+ * em "::" e em "127.0.0.1" ao mesmo tempo nem sempre falha, então "consegui abrir" não prova nada.
+ */
+function portaOcupada(porta: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        const sock = connect({ port: porta, host: "localhost" });
+        const fim = (ocupada: boolean) => { sock.destroy(); resolve(ocupada); };
+        sock.setTimeout(1500, () => fim(false));
+        sock.once("connect", () => fim(true));
+        sock.once("error", () => fim(false));
+    });
+}
+
+/** Reserva uma porta livre em 127.0.0.1 (porta 0 = o sistema escolhe) e devolve qual foi. */
+function testarPorta(porta: number, host = "127.0.0.1"): Promise<number | null> {
+    return new Promise((resolve) => {
+        const srv = createServer();
+        srv.once("error", () => resolve(null));
+        srv.listen(porta, host, () => {
+            const real = (srv.address() as { port: number }).port;
+            srv.close(() => resolve(real));
+        });
+    });
+}
+
+async function apiRespondendo(porta = portaApi): Promise<boolean> {
+    try {
+        const res = await fetch(`http://localhost:${porta}/api/health`, { signal: AbortSignal.timeout(2000) });
+        return res.status === 200 || res.status === 503;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Garante uma única instância por pasta de dados. Trava de outro processo que já morreu
+ * (ex.: terminal fechado à força) é descartada.
+ */
+async function pegarTrava(): Promise<void> {
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+        try {
+            const fd = openSync(arquivoTrava, "wx");
+            writeSync(fd, JSON.stringify({ pid: process.pid, inicio: new Date().toISOString(), api: comApi ? portaApi : null }));
+            closeSync(fd);
+            process.on("exit", () => {
+                try {
+                    if (JSON.parse(readFileSync(arquivoTrava, "utf8")).pid === process.pid) unlinkSync(arquivoTrava);
+                } catch { /* já removida */ }
+            });
+            return;
+        } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        }
+        let dono: { pid?: number; inicio?: string; api?: number | null } = {};
+        try { dono = JSON.parse(readFileSync(arquivoTrava, "utf8")); } catch { /* trava corrompida: trata como velha */ }
+        if (dono.pid && dono.pid !== process.pid && processoVivo(dono.pid)) {
+            const api = dono.api ? await apiRespondendo(dono.api) : false;
+            sair([
+                `O SATIC local já está rodando (processo ${dono.pid}, desde ${dono.inicio ?? "?"}).`,
+                api ? `A API dele responde em http://localhost:${dono.api}: você pode usá-la como está.` : "",
+                `Para reiniciar, encerre o anterior (Ctrl+C no terminal dele, ou no PowerShell: Stop-Process -Id ${dono.pid}) e rode de novo.`,
+                "Dois bancos abrindo a mesma pasta de dados ao mesmo tempo poderiam corromper os dados, por isso este não iniciou.",
+            ].filter(Boolean).join("\n             "));
+        }
+        console.log(`[SATIC-LOCAL] Trava antiga de um processo que já terminou (${dono.pid ?? "?"}): removendo.`);
+        try { unlinkSync(arquivoTrava); } catch { /* outro processo removeu antes */ }
+    }
+    sair(`Não foi possível criar a trava ${arquivoTrava}.`);
+}
 
 async function main(): Promise<void> {
+    // 1. Trava e portas ANTES de abrir a pasta de dados
+    await pegarTrava();
+
+    if (comApi && await portaOcupada(portaApi)) {
+        // Instância antiga sem trava (ex.: iniciada antes desta versão) ou outro programa na porta
+        sair(await apiRespondendo()
+            ? [`Já existe uma API do SATIC respondendo em http://localhost:${portaApi}: provavelmente um "npm run local" anterior que ficou aberto.`,
+                "Use-a como está, ou encerre-a e rode de novo. No PowerShell:",
+                `Stop-Process -Id (Get-NetTCPConnection -LocalPort ${portaApi} -State Listen).OwningProcess`].join("\n             ")
+            : `A porta ${portaApi} da API está em uso por outro programa. Use outra: $env:PORT=3002; npm run local`);
+    }
+
+    let porta: number;
+    if (portaPedida !== undefined) {
+        porta = Number(portaPedida);
+        if (!Number.isInteger(porta) || porta <= 0 || porta > 65535) sair(`Porta inválida: ${portaPedida}`);
+        if (await portaOcupada(porta)) {
+            sair(`A porta ${porta} do banco já está em uso (um PostgreSQL instalado, ou outro "npm run db:local"?). Use outra: npm run db:local -- --porta=5433`);
+        }
+    } else {
+        const livre = await testarPorta(0);
+        if (livre === null) sair("Não foi possível reservar uma porta livre para o banco.");
+        porta = livre;
+    }
+
+    // O pool da API e dos scripts aponta para este banco (sobrepõe o .env)
+    delete process.env.DATABASE_URL;
+    Object.assign(process.env, {
+        PGHOST: "127.0.0.1",
+        PGPORT: String(porta),
+        PGUSER: "postgres",
+        PGPASSWORD: "postgres",
+        PGDATABASE: "postgres",
+        PGPOOL_MAX: "1",
+    });
+
     if (resetar) {
         console.log(`[SATIC-LOCAL] --resetar: apagando ${pastaDados}`);
         await rm(pastaDados, { recursive: true, force: true });
     }
 
+    // 2. Banco
     console.log(`[SATIC-LOCAL] Abrindo PostgreSQL (PGlite) em ${pastaDados}...`);
     const db = await PGlite.create({ dataDir: pastaDados });
     const servidorBanco = new PGLiteSocketServer({ db, port: porta, host: "127.0.0.1" });
     try {
         await servidorBanco.start();
     } catch (err) {
-        const codigo = (err as { code?: string }).code;
-        console.error(codigo === "EADDRINUSE"
-            ? `[SATIC-LOCAL] A porta ${porta} já está em uso (outro PostgreSQL?). Use --porta=5433.`
-            : `[SATIC-LOCAL] Falha ao abrir a porta ${porta}: ${(err as Error).message}`);
         await db.close();
-        process.exit(1);
+        sair(`Falha ao abrir a porta ${porta} do banco: ${(err as Error).message}`);
     }
     console.log(`[SATIC-LOCAL] PostgreSQL ouvindo em 127.0.0.1:${porta} (usuário postgres, banco postgres)`);
 
@@ -87,26 +200,8 @@ async function main(): Promise<void> {
         console.log(`[SATIC-LOCAL] Banco já povoado (${rows[0].n} turmas). Use --resetar para recriar do zero.`);
     }
 
-    let servidorApi: import("node:http").Server | undefined;
-    if (comApi) {
-        await import("dotenv/config");
-        const { criarApp } = await import("../src/api/app.ts");
-        const portaApi = Number(process.env.PORT || 3001);
-        servidorApi = criarApp().listen(portaApi, () => {
-            console.log(`[SATIC-LOCAL] API Express em http://localhost:${portaApi} (health: /api/health)`);
-        });
-        servidorApi.on("error", (err: NodeJS.ErrnoException) => {
-            console.error(err.code === "EADDRINUSE"
-                ? `[SATIC-LOCAL] A porta ${portaApi} da API já está em uso (defina PORT).`
-                : `[SATIC-LOCAL] Falha ao iniciar a API: ${err.message}`);
-            void encerrar("erro");
-        });
-    } else {
-        console.log("[SATIC-LOCAL] Só o banco está no ar. Em outro terminal: $env:PGPORT=" + porta + "; $env:PGPOOL_MAX=1; npm start");
-    }
-    console.log("[SATIC-LOCAL] Ctrl+C para encerrar.");
-
     let encerrando = false;
+    let servidorApi: import("node:http").Server | undefined;
     async function encerrar(sinal: string): Promise<void> {
         if (encerrando) return;
         encerrando = true;
@@ -119,6 +214,25 @@ async function main(): Promise<void> {
     }
     process.on("SIGINT", () => void encerrar("SIGINT"));
     process.on("SIGTERM", () => void encerrar("SIGTERM"));
+
+    // 3. API
+    if (comApi) {
+        await import("dotenv/config");
+        const { criarApp } = await import("../src/api/app.ts");
+        servidorApi = criarApp().listen(portaApi, () => {
+            console.log(`[SATIC-LOCAL] API Express em http://localhost:${portaApi} (health: /api/health)`);
+            console.log("[SATIC-LOCAL] Ctrl+C para encerrar.");
+        });
+        servidorApi.on("error", (err: NodeJS.ErrnoException) => {
+            console.error(err.code === "EADDRINUSE"
+                ? `[SATIC-LOCAL] A porta ${portaApi} da API já está em uso (defina PORT).`
+                : `[SATIC-LOCAL] Falha ao iniciar a API: ${err.message}`);
+            void encerrar("erro");
+        });
+    } else {
+        console.log(`[SATIC-LOCAL] Só o banco está no ar. Em outro terminal: $env:PGPORT=${porta}; $env:PGPOOL_MAX=1; npm start`);
+        console.log("[SATIC-LOCAL] Ctrl+C para encerrar.");
+    }
 }
 
 main().catch((err) => {
