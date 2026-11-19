@@ -128,10 +128,12 @@ export class RemanejamentoService {
     }
 
     /**
-     * "Confirmar tudo": aplica uma lista de movimentos numa transação. Cada movimento é validado
-     * contra o estado que já inclui os anteriores aceitos; os recusados não impedem os demais.
-     * Os recusados ganham uma segunda tentativa no fim (ex.: troca de salas entre duas turmas,
-     * em que a primeira só cabe depois que a segunda sai).
+     * "Confirmar tudo": aplica uma lista de movimentos numa transação, validando o ESTADO FINAL.
+     *
+     * Validar um movimento por vez contra o banco recusaria trocas (A vai para a sala de B e B para
+     * a de A: cada um bate no outro, que ainda não saiu). Por isso todos os movimentos são aplicados
+     * em memória; cada um é checado contra esse resultado; os inválidos saem e a checagem se repete
+     * até estabilizar (sair um pode invalidar quem dependia dele). Só os aceitos são gravados.
      */
     async confirmarLote(movimentos: unknown): Promise<ResultadoLote> {
         if (!Array.isArray(movimentos) || movimentos.length === 0) {
@@ -164,18 +166,87 @@ export class RemanejamentoService {
                 await bloquearSemestre(db, semestre);
             }
 
-            const resultados = new Map<number, ResultadoItemLote>();
-            let pendentes = lidos;
-            for (let passada = 0; passada < 2 && pendentes.length > 0; passada++) {
-                const recusados: typeof lidos = [];
-                for (const l of pendentes) {
-                    const turma = turmas.get(l.mov.turmaId)!;
-                    const r = l.remover ? await this.#remover(turma, db) : await this.#aplicar(turma, l.mov, l.status, db);
-                    resultados.set(l.indice, { ...r, indice: l.indice, turmaId: turma.id ?? null });
-                    if (!r.sucesso) recusados.push(l);
+            // Estado atual (todas as turmas dos semestres envolvidos)
+            const base: Alocacao[] = [];
+            for (const semestre of new Set([...turmas.values()].map((t) => t.semestre))) {
+                base.push(...await this.#alocacaoRepo.listarPorSemestre(semestre, db));
+            }
+            // Último movimento de cada turma vale (o rascunho do front já manda um por turma)
+            const porTurma = new Map<number, (typeof lidos)[number]>();
+            for (const l of lidos) porTurma.set(l.mov.turmaId, l);
+
+            interface Plano { l: (typeof lidos)[number]; turma: Turma; sala: Sala | null; horario: string; origemSala?: OrigemSala; violacoes: Violacao[] }
+            let candidatos: Plano[] = [...porTurma.values()].map((l) => ({ l, turma: turmas.get(l.mov.turmaId)!, sala: null, horario: "", violacoes: [] }));
+            const recusados = new Map<number, Plano>();
+
+            const estadoCom = (planos: readonly Plano[], exceto?: Plano): Alocacao[] => {
+                const movidas = new Set(planos.map((p) => p.turma.id));
+                const resto = base.filter((a) => !movidas.has(a.turma.id));
+                const atuais = new Map(base.map((a) => [a.turma.id, a]));
+                for (const p of planos) {
+                    if (p === exceto || p.l.remover || !p.sala) continue;
+                    const atual = atuais.get(p.turma.id);
+                    resto.push({ id: atual?.id ?? null, turma: p.turma, sala: p.sala, horarioCodigo: p.horario, status: atual?.status ?? "RASCUNHO" });
                 }
-                if (recusados.length === pendentes.length) break; // nenhum progresso: não adianta repetir
-                pendentes = recusados;
+                return resto;
+            };
+
+            for (let rodada = 0; rodada <= candidatos.length; rodada++) {
+                // 1. Sala e horário de cada movimento, vendo os outros já aplicados
+                for (const p of candidatos) {
+                    if (p.l.remover) continue;
+                    const outros = estadoCom(candidatos, p);
+                    const atual = base.find((a) => mesmaTurma(a.turma, p.turma));
+                    const r = await this.#resolver(p.turma, p.l.mov, atual ? [...outros, atual] : outros, db);
+                    Object.assign(p, { sala: r.sala, horario: r.horario, origemSala: r.origemSala ?? undefined, violacoes: r.valida ? [] : r.violacoes });
+                }
+                // 2. Cada um contra o estado final com todos aplicados
+                const final = estadoCom(candidatos);
+                for (const p of candidatos) {
+                    if (p.l.remover || !p.sala) continue;
+                    const v = diagnosticarViolacoes(p.turma, p.sala, final, p.horario);
+                    if (v.length > 0) p.violacoes = v;
+                }
+                const invalidos = candidatos.filter((p) => !p.l.remover && (p.violacoes.length > 0 || !p.sala));
+                if (invalidos.length === 0) break;
+                for (const p of invalidos) recusados.set(p.l.indice, p);
+                candidatos = candidatos.filter((p) => !invalidos.includes(p));
+            }
+
+            // 3. Grava só os aceitos
+            const resultados = new Map<number, ResultadoItemLote>();
+            const atuaisPorTurma = new Map(base.map((a) => [a.turma.id, a]));
+            for (const p of candidatos) {
+                const turmaId = p.turma.id ?? null;
+                if (p.l.remover) {
+                    resultados.set(p.l.indice, { ...await this.#remover(p.turma, db), indice: p.l.indice, turmaId });
+                    continue;
+                }
+                const existente = atuaisPorTurma.get(p.turma.id);
+                const status: StatusAlocacao = p.l.status ?? (existente?.status === "EXTERNA_FIXA" ? "EXTERNA_FIXA" : "DEFINITIVA");
+                let alocacao: Alocacao;
+                if (existente && existente.id != null) {
+                    await this.#alocacaoRepo.atualizarSalaEHorario(existente.id, p.sala!.id!, p.horario, status, db);
+                    alocacao = { ...existente, turma: p.turma, sala: p.sala!, horarioCodigo: p.horario, status };
+                } else {
+                    alocacao = await this.#alocacaoRepo.inserir({ turma: p.turma, sala: p.sala!, horarioCodigo: p.horario, status }, db);
+                }
+                resultados.set(p.l.indice, { sucesso: true, mensagem: "Alocação gravada.", alocacao, origemSala: p.origemSala, indice: p.l.indice, turmaId });
+            }
+            for (const p of recusados.values()) {
+                resultados.set(p.l.indice, {
+                    sucesso: false,
+                    mensagem: "Remanejamento recusado pelo servidor: uma ou mais regras de negócio foram violadas.",
+                    violacoes: p.violacoes.length ? p.violacoes : [{ regra: "SALA", mensagem: "Nenhuma sala compatível livre." }],
+                    indice: p.l.indice,
+                    turmaId: p.turma.id ?? null,
+                });
+            }
+            // Movimentos repetidos da mesma turma: só o último vale
+            for (const l of lidos) {
+                if (!resultados.has(l.indice)) {
+                    resultados.set(l.indice, { sucesso: true, mensagem: "Substituído por um movimento posterior da mesma turma.", indice: l.indice, turmaId: l.mov.turmaId });
+                }
             }
 
             const lista = [...resultados.values()].sort((a, b) => a.indice - b.indice);

@@ -3,7 +3,7 @@ import { AlocacaoRepository } from "../../db/repositories/index.ts";
 import { AlocadorService, SEMESTRE_PADRAO } from "../../motor/alocador.service.ts";
 import { RemanejamentoService } from "../../motor/remanejamento.service.ts";
 import { MAX_NOS_BUSCA } from "../../motor/state-space-search.ts";
-import { SugestoesService } from "../../motor/sugestoes.service.ts";
+import { SugestoesService, lerMovimentosRascunho } from "../../motor/sugestoes.service.ts";
 import { LIMITE_NOS_SUGESTOES } from "../../motor/sugestoes.ts";
 import {
     lerBooleanoOpcional,
@@ -40,7 +40,8 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
     /**
      * Motor de sugestões (horário + sala) para os conflitos e pendências. Não grava nada:
      * para aplicar, o front envia as mudanças escolhidas para /confirmar-lote.
-     * Corpo: { semestre?, alvos?: turmaId[], permitirMudarFormato?: turmaId[], limiteNos?, maxAlternativas? }
+     * Corpo: { semestre?, alvos?: turmaId[], permitirMudarFormato?: turmaId[], limiteNos?, maxAlternativas?,
+     *          movimentos?: rascunho do front (mesmo formato do /confirmar-lote), aplicado só em memória }
      */
     router.post("/sugestoes", async (req: Request, res: Response) => {
         const body = lerCorpo(req.body);
@@ -49,7 +50,7 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
             permitirMudarFormato: lerListaDeIdsOpcional(body.permitirMudarFormato, "permitirMudarFormato"),
             limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 5),
             maxAlternativas: lerInteiroOpcional(body.maxAlternativas, "maxAlternativas", 0, 10),
-        }));
+        }, lerMovimentosRascunho(body.movimentos)));
     });
 
     router.get("/", async (req: Request, res: Response) => {

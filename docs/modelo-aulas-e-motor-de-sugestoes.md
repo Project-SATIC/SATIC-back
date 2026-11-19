@@ -88,6 +88,8 @@ Os choques costumam estar ligados: mudar uma turma de horário muitas vezes reso
 
 - O arrasto na grade move aulas de 50 minutos. O ideal combinado é selecionar várias aulas em área, ou puxar o bloco pelo cabeçalho do primeiro card. O mínimo aceitável é mover uma aula por vez. O destino precisa ter espaço para todas.
 - As mudanças **se acumulam como rascunho** no navegador e são validadas na hora, com o mesmo código do servidor (`/shared/*.js`). "**Confirmar tudo**" envia o lote e "**Descartar**" volta ao que está salvo.
+- O servidor valida o **estado final do lote**, e não um movimento por vez. Assim, uma troca entre duas turmas é aceita. O teste no navegador mostrou que, validando um por vez, cada lado batia no outro.
+- O motor de sugestões recebe o rascunho (`movimentos`) e o aplica só em memória, para enxergar os conflitos criados no navegador antes de confirmar.
 - **Sala ao mover:** se a sala atual continua livre e válida no novo horário, a turma fica nela. Se não, o servidor sugere a melhor sala livre (o mesmo critério do motor: sala comum antes de laboratório para disciplina teórica, e a menor sala que comporta a turma). A secretaria pode trocar antes de confirmar.
 
 ## 6. Motor de sugestões (horário + sala)

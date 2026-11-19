@@ -110,6 +110,31 @@ describe("Remanejamento: Confirmar tudo (lote)", () => {
         assert.deepEqual(r.resultados.map((x) => x.indice), [0, 1]);
     });
 
+    test("troca de salas entre duas turmas no mesmo horário é aceita (valida o estado final)", async () => {
+        // Regressão (achada no navegador): validando um por vez, cada movimento batia no outro
+        const { banco, servico } = cenario();
+        assert.equal(salaDe(banco, 1)?.salaId, 3); // A na Sala 04
+        assert.equal(salaDe(banco, 2)?.salaId, 2); // B na Sala 03, mesmo horário 35M34
+        const r = await servico.confirmarLote([
+            { turmaId: 1, salaId: 2 },
+            { turmaId: 2, salaId: 3 },
+        ]);
+        assert.equal(r.aceitos, 2, JSON.stringify(r.resultados));
+        assert.equal(salaDe(banco, 1)?.salaId, 2);
+        assert.equal(salaDe(banco, 2)?.salaId, 3);
+    });
+
+    test("se um movimento é recusado, quem dependia dele também é", async () => {
+        const { banco, servico } = cenario();
+        // A sai da Sala 04 para um horário inválido (perde aulas); B só caberia na Sala 04 se A saísse
+        const r = await servico.confirmarLote([
+            { turmaId: 1, horario: "3M3" },
+            { turmaId: 2, salaId: 3 },
+        ]);
+        assert.equal(r.aceitos, 0, JSON.stringify(r.resultados));
+        assert.equal(salaDe(banco, 2)?.salaId, 2, "B continua onde estava");
+    });
+
     test("recusados não impedem os válidos; remover tira a turma da grade", async () => {
         const { banco, servico } = cenario();
         const r = await servico.confirmarLote([

@@ -5,6 +5,7 @@ import { carregarBase2026_2 } from "../src/seed/seeder.ts";
 import { montarProblema } from "../src/motor/montar-problema.ts";
 import { StateSpaceSearch } from "../src/motor/state-space-search.ts";
 import { gerarHorariosCandidatos, sugerirResolucoes, type Sugestao } from "../src/motor/sugestoes.ts";
+import { aplicarRascunho, lerMovimentosRascunho } from "../src/motor/sugestoes.service.ts";
 import { chaveTurma } from "../src/shared/tipos.ts";
 import type { Alocacao } from "../src/shared/tipos.ts";
 import { blocosDoHorario, contarAulas, formatoDoHorario, verificarFormatoHorario } from "../src/shared/grade.ts";
@@ -136,6 +137,40 @@ describe("Motor de sugestões: horário + sala", () => {
         assert.ok(r.pendentes.some((p) => p.turmaId === semDocente.id && p.motivo === "sem docente"));
         assert.ok(r.naoResolvidos.some((p) => p.turmaId === semDocente.id));
         assert.ok(!r.plano?.mudancas.some((m) => m.turmaId === semDocente.id));
+    });
+});
+
+describe("Motor de sugestões com o rascunho do front", () => {
+    test("o conflito criado só no rascunho é enxergado e resolvido sem gravar nada", () => {
+        const { base, salas, alocacoes } = gradeReal();
+        const rascunhos = alocacoes.filter((a) => a.status === "RASCUNHO");
+        const sobrepoe = (x: Alocacao, y: Alocacao) => expandirParaSlotsAtomicos(x.horarioCodigo).some((s) => expandirParaSlotsAtomicos(y.horarioCodigo).includes(s));
+        const [a, b] = (() => {
+            for (const x of rascunhos) for (const y of rascunhos) {
+                if (x !== y && x.sala.id !== y.sala.id && sobrepoe(x, y) && y.turma.matriculados <= x.sala.capacidade
+                    && (!y.turma.disciplina.exigeLaboratorio || x.sala.tipoEspaco === "Laboratório")) return [x, y];
+            }
+            throw new Error("par não encontrado");
+        })();
+        assert.equal(sugerirResolucoes(base.turmas, salas, alocacoes).conflitos.length, 0, "no banco não há conflito");
+
+        const movimentos = lerMovimentosRascunho([{ turmaId: b.turma.id, salaId: a.sala.id, horario: b.horarioCodigo }]);
+        const comRascunho = aplicarRascunho(base.turmas, salas, alocacoes, movimentos);
+        assert.equal(alocacoes.find((x) => x === b)?.sala.id, b.sala.id, "a lista original não muda");
+        const r = sugerirResolucoes(base.turmas, salas, comRascunho);
+        assert.ok(r.conflitos.length >= 2);
+        assert.ok(r.plano);
+        assert.equal(sugerirResolucoes(base.turmas, salas, aplicar(comRascunho, r.plano, salas)).conflitos.length, 0);
+    });
+
+    test("remover no rascunho vira pendente; movimento malformado é recusado", () => {
+        const { base, salas, alocacoes } = gradeReal();
+        const alvo = alocacoes.find((a) => a.status === "RASCUNHO")!;
+        const semEla = aplicarRascunho(base.turmas, salas, alocacoes, lerMovimentosRascunho([{ turmaId: alvo.turma.id, acao: "remover" }]));
+        assert.equal(semEla.length, alocacoes.length - 1);
+        assert.ok(sugerirResolucoes(base.turmas, salas, semEla).pendentes.some((p) => p.turmaId === alvo.turma.id));
+        assert.throws(() => lerMovimentosRascunho([{ turmaId: "x" }]), /movimentos\[0\]/);
+        assert.throws(() => lerMovimentosRascunho({}), /lista/);
     });
 });
 

@@ -380,7 +380,7 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 ---
 
 ### `POST /api/alocacoes/confirmar-lote` ("Confirmar tudo" do rascunho)
-Aplica de uma vez as mudanças acumuladas no navegador. Tudo roda numa transação, com lock de cada semestre envolvido. Cada movimento é validado contra o estado que já inclui os anteriores aceitos, e os recusados não impedem os demais. Os recusados ganham uma segunda tentativa no fim, porque às vezes um movimento só cabe depois que outro libera a sala.
+Aplica de uma vez as mudanças acumuladas no navegador. Tudo roda numa transação, com lock de cada semestre envolvido. O servidor valida o **estado final**: aplica todos os movimentos em memória, checa cada um contra esse resultado, tira os inválidos e repete até estabilizar. Só os aceitos são gravados. Por isso **trocas** funcionam (A vai para a sala de B e B para a de A), e quem dependia de um movimento recusado também é recusado. Se a mesma turma aparece mais de uma vez, vale o último movimento.
 
 * **Payload**:
   ```json
@@ -438,9 +438,11 @@ Roda o motor de sugestões para os conflitos e pendências. **Não grava nada.**
     "alvos": [12, 30],
     "permitirMudarFormato": [30],
     "limiteNos": 200000,
-    "maxAlternativas": 3
+    "maxAlternativas": 3,
+    "movimentos": [{ "turmaId": 30, "salaId": 13, "horario": "46M12" }]
   }
   ```
+  * `movimentos`: o rascunho ainda não confirmado, no mesmo formato do `/confirmar-lote`. Ele é aplicado **só em memória** antes da busca, para o motor enxergar os conflitos criados no navegador. Nada é gravado.
   * `alvos`: turmas a resolver. Padrão: todas as em conflito e as pendentes que só não têm sala.
   * `permitirMudarFormato`: turmas cujo formato o motor pode mudar (2+2 → 4 num dia etc.). A busca fica mais lenta.
   * `limiteNos`: 1 a 1.000.000 (padrão 200.000).
