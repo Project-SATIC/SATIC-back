@@ -31,3 +31,17 @@ export function turma(
     }
     return t;
 }
+
+/** Executor que responde qualquer SQL com zero linhas e registra as chamadas (para mocks de repositório). */
+export function executorVazio(chamadas: { sql: string; params?: unknown[] }[] = []) {
+    return {
+        chamadas,
+        query: async (sql: string, params?: unknown[]) => {
+            chamadas.push({ sql, params });
+            return { rows: [], rowCount: 0 } as never;
+        },
+    };
+}
+
+/** Substituto de comTransacao nos testes: executa o callback com um executor vazio, sem PostgreSQL. */
+export const semTransacao = <T>(fn: (db: never) => Promise<T>): Promise<T> => fn(executorVazio() as never);

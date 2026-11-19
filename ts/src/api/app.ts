@@ -1,17 +1,68 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
-import cors from "cors";
+import cors, { type CorsOptions } from "cors";
 import { healthRouter } from "./routes/health.routes.ts";
 import { disciplinasRouter } from "./routes/disciplinas.routes.ts";
 import { salasRouter } from "./routes/salas.routes.ts";
 import { professoresRouter } from "./routes/professores.routes.ts";
 import { turmasRouter } from "./routes/turmas.routes.ts";
-import { alocacoesRouter } from "./routes/alocacoes.routes.ts";
+import { criarAlocacoesRouter, type ServicosAlocacao } from "./routes/alocacoes.routes.ts";
+import { ErroHttp } from "../erros.ts";
+import { FormatoHorarioInvalidoError } from "../shared/horario-sigaa.ts";
 
-export function criarApp(): Express {
+export interface OpcoesApp {
+    /** Substitui serviços de alocação (usado nos testes para não depender do PostgreSQL). */
+    alocacoes?: Partial<ServicosAlocacao>;
+}
+
+/**
+ * CORS_ORIGIN="http://127.0.0.1:8040,http://localhost:8040" restringe as origens aceitas.
+ * Sem a variável, qualquer origem é aceita (desenvolvimento local).
+ */
+function opcoesCors(): CorsOptions {
+    const origens = (process.env.CORS_ORIGIN ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+    return origens.length > 0 ? { origin: origens } : {};
+}
+
+const CODIGOS_BANCO_INDISPONIVEL = new Set([
+    "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN",
+    "57P01", "57P03", // admin_shutdown, cannot_connect_now
+    "3D000", // banco inexistente
+    "28P01", "28000", // falha de autenticação
+]);
+
+/** Erro de conexão com o PostgreSQL (servidor fora do ar, credenciais erradas, banco inexistente). */
+function isBancoIndisponivel(err: unknown): boolean {
+    if (err instanceof AggregateError) return err.errors.some(isBancoIndisponivel);
+    if (typeof err !== "object" || err === null) return false;
+    const codigo = (err as { code?: unknown }).code;
+    if (typeof codigo === "string" && CODIGOS_BANCO_INDISPONIVEL.has(codigo)) return true;
+    const msg = err instanceof Error ? err.message : "";
+    return /timeout exceeded when trying to connect|Connection terminated/i.test(msg);
+}
+
+/** Violação de integridade do PostgreSQL: 23505 (unique) e 23503 (foreign key). */
+function codigoIntegridade(err: unknown): string | undefined {
+    const codigo = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+    return codigo === "23505" || codigo === "23503" ? codigo : undefined;
+}
+
+function mensagemDe(err: unknown): string {
+    if (err instanceof AggregateError && err.errors.length > 0) return err.errors.map(mensagemDe).join("; ");
+    if (err instanceof Error) return err.message || (err as { code?: string }).code || err.name;
+    return String(err);
+}
+
+/** Erro de JSON malformado gerado pelo body-parser do express.json(). */
+function isErroDeCorpo(err: unknown): err is { status: number; type: string; message: string } {
+    return typeof err === "object" && err !== null && "type" in err && "status" in err
+        && typeof (err as { status: unknown }).status === "number";
+}
+
+export function criarApp(opcoes: OpcoesApp = {}): Express {
     const app = express();
 
-    app.use(cors());
-    app.use(express.json());
+    app.use(cors(opcoesCors()));
+    app.use(express.json({ limit: "1mb" }));
 
     // Rotas da API
     app.use("/api/health", healthRouter);
@@ -19,13 +70,13 @@ export function criarApp(): Express {
     app.use("/api/salas", salasRouter);
     app.use("/api/professores", professoresRouter);
     app.use("/api/turmas", turmasRouter);
-    app.use("/api/alocacoes", alocacoesRouter);
+    app.use("/api/alocacoes", criarAlocacoesRouter(opcoes.alocacoes));
 
     // Rota raiz informativa
     app.get("/", (_req: Request, res: Response) => {
         res.json({
             nome: "SATIC API (Sistema de Alocação de Turmas - IC UFAL)",
-            versao: "0.1.0",
+            versao: "0.2.0",
             status: "online",
             documentacao: {
                 rotas: [
@@ -45,11 +96,31 @@ export function criarApp(): Express {
         res.status(404).json({ erro: `Rota ${req.method} ${req.path} não encontrada` });
     });
 
-    // Handler global de erros (500)
+    // Handler global de erros: ErroHttp -> seu status; JSON inválido -> 400; resto -> 500
     app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[SATIC-API] Erro não tratado:", msg);
-        res.status(500).json({ erro: "Erro interno no servidor", detalhes: msg });
+        if (err instanceof ErroHttp) {
+            res.status(err.status).json({ erro: err.message, ...(err.detalhes !== undefined ? { detalhes: err.detalhes } : {}) });
+            return;
+        }
+        if (err instanceof FormatoHorarioInvalidoError) {
+            res.status(400).json({ erro: "Horário SIGAA inválido", detalhes: err.message });
+            return;
+        }
+        if (isErroDeCorpo(err) && err.status >= 400 && err.status < 500) {
+            res.status(err.status).json({ erro: "Corpo da requisição inválido", detalhes: err.message });
+            return;
+        }
+        if (isBancoIndisponivel(err)) {
+            console.error("[SATIC-API] PostgreSQL indisponível:", mensagemDe(err));
+            res.status(503).json({ erro: "Banco de dados indisponível", detalhes: mensagemDe(err) });
+            return;
+        }
+        if (codigoIntegridade(err)) {
+            res.status(409).json({ erro: "Operação viola a integridade do banco", detalhes: mensagemDe(err) });
+            return;
+        }
+        console.error("[SATIC-API] Erro não tratado:", err);
+        res.status(500).json({ erro: "Erro interno no servidor", detalhes: mensagemDe(err) });
     });
 
     return app;

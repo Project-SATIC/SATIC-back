@@ -1,4 +1,4 @@
-import { query } from "../connection.ts";
+import { executorPadrao, query, type Executor } from "../connection.ts";
 import type { Sala } from "../../shared/tipos.ts";
 
 interface SalaRow {
@@ -49,8 +49,8 @@ export class SalaRepository {
         }
     }
 
-    async buscarPorId(id: number): Promise<Sala | null> {
-        const res = await query<SalaRow>(
+    async buscarPorId(id: number, db: Executor = executorPadrao): Promise<Sala | null> {
+        const res = await db.query<SalaRow>(
             "SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala WHERE id = $1;",
             [id]
         );
@@ -69,14 +69,14 @@ export class SalaRepository {
 
     async listarTodas(): Promise<Sala[]> {
         const res = await query<SalaRow>(
-            "SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala ORDER BY bloco ASC, nome ASC;"
+            `SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala ORDER BY bloco COLLATE "C" ASC, nome COLLATE "C" ASC;`
         );
         return res.rows.map(mapearLinha);
     }
 
-    async listarAlocaveisPeloIc(): Promise<Sala[]> {
-        const res = await query<SalaRow>(
-            "SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala WHERE alocavel_ic = TRUE ORDER BY bloco ASC, nome ASC;"
+    async listarAlocaveisPeloIc(db: Executor = executorPadrao): Promise<Sala[]> {
+        const res = await db.query<SalaRow>(
+            `SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala WHERE alocavel_ic = TRUE ORDER BY bloco COLLATE "C" ASC, nome COLLATE "C" ASC;`
         );
         return res.rows.map(mapearLinha);
     }

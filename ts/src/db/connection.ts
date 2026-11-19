@@ -47,6 +47,47 @@ export async function getClient(): Promise<pg.PoolClient> {
     return currentPool.connect();
 }
 
+/**
+ * Qualquer objeto capaz de executar SQL: o pool (padrão) ou um cliente dentro de uma transação.
+ * Os repositórios recebem um Executor opcional para participar de transações abertas pelos serviços.
+ */
+export interface Executor {
+    query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]): Promise<pg.QueryResult<R>>;
+}
+
+export const executorPadrao: Executor = { query };
+
+/** Abre uma transação, executa `fn` com o cliente dela e faz COMMIT (ou ROLLBACK em caso de erro). */
+export type ExecutorTransacional = <T>(fn: (db: Executor) => Promise<T>) => Promise<T>;
+
+/** Executa `fn` dentro de BEGIN/COMMIT, com ROLLBACK em caso de erro. */
+export async function comTransacao<T>(fn: (db: Executor) => Promise<T>): Promise<T> {
+    const client = await getClient();
+    try {
+        await client.query("BEGIN;");
+        const resultado = await fn(client as Executor);
+        await client.query("COMMIT;");
+        return resultado;
+    } catch (err) {
+        await client.query("ROLLBACK;").catch(() => undefined);
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+export const SQL_LOCK_SEMESTRE = "SELECT pg_advisory_xact_lock(hashtext($1));";
+
+/**
+ * Serializa, dentro da transação atual, as escritas de alocação de um semestre: geração (`/gerar`)
+ * e remanejamentos (`/confirmar`) do mesmo semestre nunca rodam em paralelo, inclusive entre
+ * processos diferentes da API. O lock é liberado sozinho no COMMIT/ROLLBACK.
+ * Leituras feitas depois do lock já enxergam o que a transação concorrente gravou (READ COMMITTED).
+ */
+export async function bloquearSemestre(db: Executor, semestre: string): Promise<void> {
+    await db.query(SQL_LOCK_SEMESTRE, [`satic:alocacao:${semestre}`]);
+}
+
 export async function testConnection(): Promise<{ ok: boolean; message?: string }> {
     try {
         const res = await query("SELECT current_database() AS db, version() AS ver;");

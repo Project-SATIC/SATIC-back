@@ -106,7 +106,7 @@ export class ProfessorRepository {
     }
 
     async listarTodos(): Promise<Professor[]> {
-        const resProf = await query<ProfessorRow>("SELECT matricula_siape, nome FROM professor ORDER BY nome ASC;");
+        const resProf = await query<ProfessorRow>("SELECT matricula_siape, nome FROM professor ORDER BY nome COLLATE \"C\" ASC;");
         const resRestricoes = await query<RestricaoRow>("SELECT matricula_siape, horario_indisponivel FROM restricoes_horario;");
 
         const restricoesPorProf = new Map<string, IndisponibilidadeDocente[]>();

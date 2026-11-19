@@ -54,7 +54,7 @@ export class DisciplinaRepository {
 
     async listarTodas(): Promise<Disciplina[]> {
         const res = await query<DisciplinaRow>(
-            "SELECT codigo, nome, carga_horaria, exige_laboratorio FROM disciplina ORDER BY codigo ASC;"
+            "SELECT codigo, nome, carga_horaria, exige_laboratorio FROM disciplina ORDER BY codigo COLLATE \"C\" ASC;"
         );
         return res.rows.map(mapearLinha);
     }

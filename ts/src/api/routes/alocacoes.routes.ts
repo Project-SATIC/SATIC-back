@@ -1,70 +1,66 @@
 import { Router, type Request, type Response } from "express";
 import { AlocacaoRepository } from "../../db/repositories/index.ts";
-import { AlocadorService } from "../../motor/alocador.service.ts";
+import { AlocadorService, SEMESTRE_PADRAO } from "../../motor/alocador.service.ts";
 import { RemanejamentoService } from "../../motor/remanejamento.service.ts";
+import { MAX_NOS_BUSCA } from "../../motor/state-space-search.ts";
+import {
+    lerBooleanoOpcional,
+    lerCorpo,
+    lerInteiroOpcional,
+    lerListaDeTextosOpcional,
+    lerSemestre,
+} from "../../entrada.ts";
 
-export const alocacoesRouter = Router();
-const repo = new AlocacaoRepository();
+/** Teto do limite de nós aceito pela API (10x o padrão do motor) para uma requisição não travar o servidor. */
+export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 10;
 
-alocacoesRouter.get("/", async (req: Request, res: Response) => {
-    try {
-        const { semestre } = req.query;
+export interface ServicosAlocacao {
+    alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">;
+    alocador: Pick<AlocadorService, "gerarAlocacao">;
+    remanejamento: Pick<RemanejamentoService, "validar" | "confirmar">;
+}
 
-        const alocacoes = typeof semestre === "string" && semestre.trim() !== ""
-            ? await repo.listarPorSemestre(semestre.trim())
-            : await repo.listarTodas();
+/** Erros lançados nos handlers (ErroHttp, JSON inválido etc.) seguem para o handler global em app.ts. */
+export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): Router {
+    const alocacaoRepo = servicos.alocacaoRepo ?? new AlocacaoRepository();
+    const alocador = servicos.alocador ?? new AlocadorService();
+    const remanejamento = servicos.remanejamento ?? new RemanejamentoService();
+    const router = Router();
 
-        res.json(alocacoes);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ erro: "Erro ao listar alocações", detalhes: msg });
-    }
-});
+    router.get("/", async (req: Request, res: Response) => {
+        const semestre = typeof req.query.semestre === "string" && req.query.semestre.trim() !== ""
+            ? lerSemestre(req.query.semestre)
+            : undefined;
+        res.json(semestre ? await alocacaoRepo.listarPorSemestre(semestre) : await alocacaoRepo.listarTodas());
+    });
 
-alocacoesRouter.post("/gerar", async (req: Request, res: Response) => {
-    try {
-        const { semestre, persistir, limiteNos, semSalas } = req.body || {};
-        const service = new AlocadorService();
-        const resultado = await service.gerarAlocacao({
-            semestre,
-            persistir: persistir !== false,
-            limiteNos: typeof limiteNos === "number" ? limiteNos : undefined,
-            semSalas: Array.isArray(semSalas) ? semSalas : undefined,
+    router.post("/gerar", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const resultado = await alocador.gerarAlocacao({
+            semestre: lerSemestre(body.semestre, SEMESTRE_PADRAO),
+            persistir: lerBooleanoOpcional(body.persistir, "persistir") ?? true,
+            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_MAXIMO_API),
+            semSalas: lerListaDeTextosOpcional(body.semSalas, "semSalas"),
+            preservarDefinitivas: lerBooleanoOpcional(body.preservarDefinitivas, "preservarDefinitivas") ?? true,
         });
         res.json(resultado);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const status = msg.includes("Nenhuma turma encontrada") ? 400 : 500;
-        res.status(status).json({ erro: "Falha na geração de alocações", detalhes: msg });
-    }
-});
+    });
 
-alocacoesRouter.post("/validar", async (req: Request, res: Response) => {
-    try {
-        const service = new RemanejamentoService();
-        const resultado = await service.validar(req.body || {});
-        res.json(resultado);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const status = msg.includes("não encontrada") ? 404 : 400;
-        res.status(status).json({ erro: "Erro ao validar alocação", detalhes: msg });
-    }
-});
+    router.post("/validar", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        res.json(await remanejamento.validar({ turmaId: body.turmaId, salaId: body.salaId, horario: body.horario }));
+    });
 
-alocacoesRouter.post("/confirmar", async (req: Request, res: Response) => {
-    try {
-        const service = new RemanejamentoService();
-        const resultado = await service.confirmar(req.body || {});
-        if (!resultado.sucesso) {
-            res.status(409).json(resultado);
-            return;
-        }
-        res.json(resultado);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const status = msg.includes("não encontrada") ? 404 : 400;
-        res.status(status).json({ erro: "Erro ao confirmar alocação", detalhes: msg });
-    }
-});
+    router.post("/confirmar", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const resultado = await remanejamento.confirmar({
+            turmaId: body.turmaId,
+            salaId: body.salaId,
+            horario: body.horario,
+            status: body.status,
+        });
+        res.status(resultado.sucesso ? 200 : 409).json(resultado);
+    });
 
-
+    return router;
+}

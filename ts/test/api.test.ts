@@ -60,10 +60,11 @@ describe("API Express - Rotas e Middlewares", () => {
 
     test("GET /api/health responde com status do serviço e diagnóstico do banco", async () => {
         const res = await simularRequisicao(app, "GET", "/api/health");
-        assert.equal(res.status, 200);
-        assert.equal(res.body.status, "ok");
         assert.ok(res.body.database != null);
         assert.equal(typeof res.body.database.conectado, "boolean");
+        // 200 com banco no ar, 503 sem banco (a API continua respondendo)
+        assert.equal(res.status, res.body.database.conectado ? 200 : 503);
+        assert.equal(res.body.status, res.body.database.conectado ? "ok" : "degradado");
     });
 
     test("GET /rota-inexistente responde 404 estruturado", async () => {

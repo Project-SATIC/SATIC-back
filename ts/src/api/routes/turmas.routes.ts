@@ -1,46 +1,25 @@
 import { Router, type Request, type Response } from "express";
 import { TurmaRepository } from "../../db/repositories/index.ts";
+import { lerBooleanoOpcional, lerId, lerSemestre } from "../../entrada.ts";
+import { ErroNaoEncontrado } from "../../erros.ts";
 
 export const turmasRouter = Router();
 const repo = new TurmaRepository();
 
 turmasRouter.get("/", async (req: Request, res: Response) => {
-    try {
-        const { semestre, requer_ic } = req.query;
+    const semestre = typeof req.query.semestre === "string" && req.query.semestre.trim() !== ""
+        ? lerSemestre(req.query.semestre)
+        : undefined;
+    const requerIc = lerBooleanoOpcional(req.query.requer_ic, "requer_ic");
 
-        let turmas = typeof semestre === "string" && semestre.trim() !== ""
-            ? await repo.listarPorSemestre(semestre.trim())
-            : await repo.listarTodas();
-
-        if (requer_ic === "true" || requer_ic === "1") {
-            turmas = turmas.filter((t) => t.requerAlocacaoIc);
-        } else if (requer_ic === "false" || requer_ic === "0") {
-            turmas = turmas.filter((t) => !t.requerAlocacaoIc);
-        }
-
-        res.json(turmas);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ erro: "Erro ao listar turmas", detalhes: msg });
-    }
+    let turmas = semestre ? await repo.listarPorSemestre(semestre) : await repo.listarTodas();
+    if (requerIc !== undefined) turmas = turmas.filter((t) => t.requerAlocacaoIc === requerIc);
+    res.json(turmas);
 });
 
 turmasRouter.get("/:id", async (req: Request, res: Response) => {
-    try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) {
-            res.status(400).json({ erro: "ID inválido" });
-            return;
-        }
-
-        const turma = await repo.buscarPorId(id);
-        if (!turma) {
-            res.status(404).json({ erro: `Turma de id ${id} não encontrada` });
-            return;
-        }
-        res.json(turma);
-    } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ erro: "Erro ao buscar turma", detalhes: msg });
-    }
+    const id = lerId(req.params.id, "id");
+    const turma = await repo.buscarPorId(id);
+    if (!turma) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
+    res.json(turma);
 });

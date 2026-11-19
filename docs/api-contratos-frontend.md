@@ -10,14 +10,27 @@ Esta documentação descreve todos os endpoints da API REST do SATIC, schemas de
 * **Headers Padrão**:
   * `Content-Type: application/json`
   * `Accept: application/json`
-* **CORS**: Habilitado para qualquer origem em ambiente de desenvolvimento (permite requisições de `localhost:3000`, `localhost:5173`, etc.).
-* **Padrão de Erro Genérico**:
+* **CORS**: Sem configuração, aceita qualquer origem (desenvolvimento local, inclusive o servidor do front em `http://127.0.0.1:8040`). Para restringir, defina `CORS_ORIGIN` no `.env` com as origens separadas por vírgula (ex: `CORS_ORIGIN=http://127.0.0.1:8040,http://localhost:8040`).
+* **Padrão de Erro Genérico**: `erro` sempre presente e legível para o usuário; `detalhes` só quando houver informação técnica extra.
   ```json
   {
-    "erro": "Descrição do erro",
-    "detalhes": "Mensagem técnica ou detalhe adicional"
+    "erro": "turmaId é obrigatório e deve ser um inteiro positivo",
+    "detalhes": "opcional"
   }
   ```
+* **Códigos HTTP usados**:
+
+  | Código | Quando |
+  |---|---|
+  | `200` | Sucesso (inclui `/validar` com `valida: false`: a validação em si funcionou) |
+  | `400` | JSON malformado, corpo que não é objeto, id não inteiro/positivo, horário fora do padrão SIGAA, `status` ou `semestre` inválidos |
+  | `404` | Turma, sala, professor ou disciplina inexistente; semestre sem turmas em `/gerar` |
+  | `409` | `/confirmar` recusado por regra de negócio, ou violação de integridade do banco |
+  | `503` | PostgreSQL fora do ar ou inacessível (`erro: "Banco de dados indisponível"`) |
+  | `500` | Erro inesperado |
+
+* **IDs**: `turmaId`, `salaId` e `:id` aceitam número ou string numérica (ex: valor lido de um `data-attribute`).
+* **Horários**: notação SIGAA (`"35T34"`, `"2T56 6T12"`). O servidor normaliza maiúsculas e espaços e devolve o horário normalizado.
 
 ---
 
@@ -25,6 +38,7 @@ Esta documentação descreve todos os endpoints da API REST do SATIC, schemas de
 
 ### `GET /api/health`
 Verifica a integridade do serviço e o status da conexão com o banco PostgreSQL.
+Responde **200** com `status: "ok"` quando o banco responde e **503** com `status: "degradado"` e `database.conectado: false` quando a API está no ar mas o banco não. O corpo tem o mesmo formato nos dois casos.
 
 * **Resposta 200**:
   ```json
@@ -178,7 +192,12 @@ Lista as disciplinas da matriz curricular.
 Retorna as alocações físicas registradas no banco de dados.
 
 * **Query Parameters (Opcionais)**:
-  * `semestre`: Filtra alocações por semestre da turma (ex: `?semestre=2026.2`).
+  * `semestre`: Filtra alocações por semestre da turma (ex: `?semestre=2026.2`). Formato `AAAA.S`; outro formato responde 400.
+* **Turma embutida**: cada alocação traz a turma completa, com `professores` (e suas `indisponibilidades`) e `cargaHorariaPorDocente`, no mesmo formato de `GET /api/turmas`.
+* **Status possíveis** (no máximo uma alocação por turma):
+  * `RASCUNHO`: proposta do motor. É substituída a cada `/gerar` com `persistir: true`.
+  * `DEFINITIVA`: remanejamento confirmado pela secretaria via `/confirmar`. Por padrão sobrevive a novas gerações.
+  * `EXTERNA_FIXA`: turma de outro instituto que ocupa sala do pool do IC (ex: `IF0001-05` na `Sala 207 BL12`). Gravada pelo seed e nunca apagada pelo `/gerar`.
 * **Resposta 200**:
   ```json
   [
@@ -222,9 +241,13 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
     "semSalas": ["Auditório CEPETEC"]
   }
   ```
-  * `semestre` (string, opcional): Padrão `"2026.2"`.
+  * `semestre` (string, opcional): Padrão `"2026.2"`. Formato `AAAA.S`.
   * `persistir` (boolean, opcional): Padrão `true`. Se `false`, atua em modo *preview* (simulação sem gravar no banco).
   * `semSalas` (string[], opcional): Lista de nomes de salas a desconsiderar no cálculo.
+  * `limiteNos` (inteiro, opcional): Limite de nós da busca, de 1 a 3.000.000. Padrão: 300.000, o mesmo do motor Java.
+  * `preservarDefinitivas` (boolean, opcional): Padrão `true`. As alocações `DEFINITIVA` entram no motor como fixas e não são recalculadas. Com `false`, elas são descartadas e o motor decide de novo a sala dessas turmas.
+
+* **O que acontece com `persistir: true`**: leitura, busca e gravação rodam numa única transação, com lock do semestre. São apagadas só as alocações `RASCUNHO` (e as `DEFINITIVA`, se `preservarDefinitivas: false`) e gravadas as novas. As reservas `EXTERNA_FIXA` nunca são apagadas. Se algo falhar, nada muda no banco.
 
 * **Resposta 200**:
   ```json
@@ -237,14 +260,22 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
       "totalTurmas": 86,
       "alocadas": 86,
       "pendentes": 0,
-      "podas": 124,
-      "nosVisitados": 86,
-      "tempoMs": 14.8
+      "preservadas": 2,
+      "podas": 631,
+      "nosVisitados": 87,
+      "tempoMs": 4
     },
     "alocacoes": [ ... ],
-    "pendentes": []
+    "preservadas": [ ... ],
+    "pendentes": [],
+    "horariosInvalidos": []
   }
   ```
+  * `alocacoes`: o que o motor decidiu nesta execução (status `RASCUNHO`; com `persistir: true`, já vêm com `id`).
+  * `preservadas`: alocações `EXTERNA_FIXA` e `DEFINITIVA` mantidas e usadas como bloqueios pelo motor. Para desenhar a grade completa, junte `alocacoes` com `preservadas`, ou recarregue `GET /api/alocacoes`.
+  * `pendentes`: turmas que o motor não conseguiu alocar.
+  * `horariosInvalidos`: chaves (`"COMP360-01"`) de turmas cujo `horarioSigaa` no banco é ilegível. Elas ficam fora da busca e também aparecem em `pendentes`.
+* **Resposta 404**: semestre sem turmas cadastradas (rode o seed).
 
 ---
 
@@ -261,7 +292,10 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
   ```
   * `turmaId` (number, obrigatório): ID da turma.
   * `salaId` (number, obrigatório): ID da sala pretendida.
-  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o `horarioSigaa` original da turma.
+  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o `horarioSigaa` original da turma. Horário fora da notação SIGAA responde 400.
+  * O semestre usado na checagem é sempre o da própria turma.
+  * As checagens RN-01 (choque de docente, inclusive co-docentes) e RN-02 (indisponibilidade) usam os docentes cadastrados no banco para a turma movida e para todas as turmas já alocadas no semestre.
+* **Respostas de erro**: 400 (payload inválido) e 404 (turma ou sala inexistente).
 
 * **Resposta 200 (Válida)**:
   ```json
@@ -309,6 +343,8 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
     "status": "DEFINITIVA"
   }
   ```
+  * `status` (opcional): `RASCUNHO`, `DEFINITIVA` ou `EXTERNA_FIXA`; qualquer outro valor responde 400. Se omitido, vale `DEFINITIVA`. A exceção é mover uma reserva `EXTERNA_FIXA`, que mantém esse status.
+  * Validação e gravação rodam na mesma transação, com lock do semestre. Dois usuários confirmando ao mesmo tempo não conseguem colocar turmas na mesma sala e horário: o segundo recebe 409.
 
 * **Resposta 200 (Sucesso)**:
   ```json
@@ -344,6 +380,7 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 ## 4. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade
+0. (Opcional) `GET /api/health`: se responder 503, mostrar aviso de "banco indisponível" em vez de uma grade vazia.
 1. Fazer `GET /api/salas?alocavel_ic=true` para renderizar as colunas/linhas das salas disponíveis.
 2. Fazer `GET /api/turmas?semestre=2026.2` para obter os dados completos das turmas.
 3. Fazer `GET /api/alocacoes?semestre=2026.2` para posicionar os cards já alocados na grade.
@@ -357,3 +394,5 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
    * O front chama `POST /api/alocacoes/confirmar`.
    * Se `status 200`: atualiza o estado local e exibe toast de sucesso.
    * Se `status 409`: exibe modal de erro listando as regras que impediram a movimentação e reverte o card para a posição anterior.
+   * Se `status 400`/`404`: bug do cliente ou dado desatualizado. Mostrar `erro` e recarregar a grade.
+   * Se `status 503`: banco fora do ar. Manter o card na posição anterior e avisar o usuário.

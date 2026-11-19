@@ -54,23 +54,23 @@ describe("API Express - Fluxo de Interação do Front-end", () => {
     test("POST /api/alocacoes/validar rejeita requisição sem IDs obrigatórios", async () => {
         const res = await simularRequisicao(app, "POST", "/api/alocacoes/validar", {});
         assert.equal(res.status, 400);
-        assert.ok(res.body.detalhes?.includes("turmaId é obrigatório"));
+        assert.ok(res.body.erro?.includes("turmaId é obrigatório"));
     });
 
     test("POST /api/alocacoes/confirmar rejeita requisição sem IDs obrigatórios", async () => {
         const res = await simularRequisicao(app, "POST", "/api/alocacoes/confirmar", {});
         assert.equal(res.status, 400);
-        assert.ok(res.body.detalhes?.includes("turmaId é obrigatório"));
+        assert.ok(res.body.erro?.includes("turmaId é obrigatório"));
     });
 
     test("GET /api/turmas/999999 retorna 404 quando id não existe no banco", async () => {
-        // Se o banco não estiver rodando no sandbox, o endpoint retorna erro tratado (404 ou 500)
+        // Sem PostgreSQL no ambiente de teste, o endpoint responde 503 (banco indisponível)
         const res = await simularRequisicao(app, "GET", "/api/turmas/999999");
-        assert.ok(res.status === 404 || res.status === 500);
+        assert.ok(res.status === 404 || res.status === 503, `status ${res.status}`);
     });
 
     test("GET /api/salas/999999 retorna 404 quando id não existe no banco", async () => {
         const res = await simularRequisicao(app, "GET", "/api/salas/999999");
-        assert.ok(res.status === 404 || res.status === 500);
+        assert.ok(res.status === 404 || res.status === 503, `status ${res.status}`);
     });
 });
