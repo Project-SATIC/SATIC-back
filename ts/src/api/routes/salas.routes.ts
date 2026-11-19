@@ -22,3 +22,13 @@ salasRouter.get("/:id", async (req: Request, res: Response) => {
     if (!sala) throw new ErroNaoEncontrado(`Sala de id ${id} não encontrada`);
     res.json(sala);
 });
+
+// -------------------------------------------------------------------------------------------------
+// Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.
+//
+// POST   /api/salas          cadastro de espaço (nome, capacidade, tipo, bloco, alocavelIc, pcs, equipamentos)
+// PUT    /api/salas/:id      edição do espaço
+// PATCH  /api/salas/:id/status   { status: "Disponível" | "Manutenção" }
+//   Espaço em manutenção sai do pool do motor e do validador. Exige coluna `status` na tabela sala
+//   (e talvez `pcs`, `equipamentos`, `pavimento`, `observacao`, que o front já mostra).
+// -------------------------------------------------------------------------------------------------

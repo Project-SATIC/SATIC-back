@@ -122,15 +122,15 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
         let novaSalaId = -1;
         let novoHorario = "";
 
+        // A alocação atual da turma vem na listagem do semestre, como no banco
         const mockAlocacaoRepo = {
-            listarPorSemestre: async () => [],
-            buscarPorTurmaId: async () => ({
+            listarPorSemestre: async () => [{
                 id: 99,
                 turma: turmaGrande,
                 sala: salaPequena,
                 horarioCodigo: "24M12",
                 status: "RASCUNHO",
-            }),
+            }],
             atualizarSalaEHorario: async (id: number, sId: number, h: string) => {
                 alocacaoAtualizadaId = id;
                 novaSalaId = sId;

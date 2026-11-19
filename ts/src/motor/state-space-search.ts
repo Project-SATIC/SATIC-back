@@ -63,7 +63,8 @@ function exigeLab(turma: Turma): boolean {
     return turma.disciplina != null && turma.disciplina.exigeLaboratorio;
 }
 
-function ordenarSalasSoftConstraint(turma: Turma): (s1: Sala, s2: Sala) => number {
+/** Soft constraint do motor (exportada para o remanejamento escolher sala pelo mesmo critério). */
+export function ordenarSalasSoftConstraint(turma: Turma): (s1: Sala, s2: Sala) => number {
     const lab = exigeLab(turma);
     return (s1, s2) => {
         // Turmas teóricas: salas comuns antes de laboratórios

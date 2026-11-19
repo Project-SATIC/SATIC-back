@@ -46,6 +46,12 @@ export async function executarSeed(): Promise<{
         await profRepo.adicionarRestricao(profRanilson.matriculaSiape, "SEX-T-56");
     }
 
+    // IART* são do curso de Inteligência Artificial (noturno); a oferta importada do SIGAA/Java
+    // as traz como "CC". A base em memória fica como no Java (gabaritos), a correção vale no banco.
+    for (const t of base.turmas) {
+        if (t.disciplina.codigo.startsWith("IART") && t.cursosOfertados === "CC") t.cursosOfertados = "IA";
+    }
+
     console.log(`[SATIC-SEED] Inserindo ${base.turmas.length} turmas e vínculos docentes...`);
     await turmaRepo.inserirMuitas(base.turmas); // atribui a cada turma o id do banco
 

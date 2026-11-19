@@ -67,8 +67,8 @@ export class SalaRepository {
         return mapearLinha(res.rows[0]);
     }
 
-    async listarTodas(): Promise<Sala[]> {
-        const res = await query<SalaRow>(
+    async listarTodas(db: Executor = executorPadrao): Promise<Sala[]> {
+        const res = await db.query<SalaRow>(
             `SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala ORDER BY bloco COLLATE "C" ASC, nome COLLATE "C" ASC;`
         );
         return res.rows.map(mapearLinha);

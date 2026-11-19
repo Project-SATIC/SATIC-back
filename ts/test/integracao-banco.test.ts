@@ -138,7 +138,8 @@ describe("Integração repositórios + serviços (BancoFalso)", () => {
 
         const { remanejamento } = servicos(banco);
         assert.equal((await remanejamento.validar({ turmaId: 1, salaId: 1 })).valida, true);
-        const v = await remanejamento.validar({ turmaId: 1, salaId: 1, horario: "6T56" });
+        // Mesmas 4 aulas (2+2), mas a sexta cai no bloqueio SEX T56 do docente
+        const v = await remanejamento.validar({ turmaId: 1, salaId: 1, horario: "36T56" });
         assert.deepEqual(v.violacoes.map((x) => x.regra), ["RN-02"]);
     });
 

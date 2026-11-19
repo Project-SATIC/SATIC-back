@@ -94,18 +94,19 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         await pglite.close();
     });
 
-    test("migrations 001 e 002 aplicam e são idempotentes", async () => {
+    test("migrations 001 a 003 aplicam e são idempotentes", async () => {
         const r1 = await m.migrator.executarMigrations();
         assert.deepEqual(r1.map((r) => [r.arquivo, r.status]), [
             ["001_criar_schema_inicial.sql", "aplicada"],
             ["002_integridade_alocacao.sql", "aplicada"],
+            ["003_aulas_semanais_e_curso_ia.sql", "aplicada"],
         ]);
         const r2 = await m.migrator.executarMigrations();
         assert.ok(r2.every((r) => r.status === "ja_executada"));
         const restricoes = (await sql<{ conname: string }>("SELECT conname FROM pg_constraint WHERE conname LIKE 'uq_alocacao%' OR conname LIKE 'ck_%' ORDER BY conname")).map((r) => r.conname);
         assert.deepEqual(restricoes, [
             "ck_alocacao_status", "ck_disciplina_carga_horaria", "ck_professor_turma_carga",
-            "ck_sala_capacidade", "ck_turma_vagas", "uq_alocacao_turma",
+            "ck_sala_capacidade", "ck_turma_aulas_semanais", "ck_turma_vagas", "uq_alocacao_turma",
         ]);
     });
 
@@ -132,6 +133,10 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         const ranilson = turmas.flatMap((t) => t.professores).find((p) => p.matriculaSiape === "2024389")!;
         assert.deepEqual(ranilson.indisponibilidades.map((i) => [i.diaSemana, i.turno, i.indiceHorario]), [["SEX", "T", "56"]]);
         assert.equal(turmas.find((t) => m.tipos.chaveTurma(t) === "CPT0035-01")?.cursosOfertados, "CC, EC");
+        // aulas por semana gravadas no cadastro e turmas IART como curso IA (noturno)
+        assert.equal(comp382.aulasSemanais, 16);
+        assert.equal(turmas.find((t) => m.tipos.chaveTurma(t) === "COMP360-01")?.aulasSemanais, 4);
+        assert.deepEqual(turmas.filter((t) => t.disciplina.codigo.startsWith("IART")).map((t) => t.cursosOfertados), ["IA", "IA"]);
 
         const salas = await new m.repos.SalaRepository().listarAlocaveisPeloIc();
         // Ordem binária (bloco, nome), igual ao SQLite do Java
@@ -249,6 +254,43 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         assert.deepEqual(await sql("SELECT id_turma, id_sala, horario_codigo, status FROM alocacao ORDER BY id_turma"), antes);
     });
 
+    test("fluxo de conflito: /conflitos -> /sugestoes -> /confirmar-lote zera os conflitos", async () => {
+        const json = async (caminho: string, corpo?: unknown) => {
+            const res = await fetch(`${api}/api/alocacoes${caminho}`, corpo === undefined ? undefined
+                : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) });
+            return { status: res.status, body: await res.json() };
+        };
+        assert.deepEqual((await json("/conflitos?semestre=2026.2")).body.conflitos, []);
+
+        // Cria um choque de sala direto no banco: duas turmas RASCUNHO com horário sobreposto na mesma sala
+        const [par] = await sql<{ a: number; b: number; sala: number }>(`
+            SELECT x.id_turma AS a, y.id_turma AS b, x.id_sala AS sala
+            FROM alocacao x JOIN alocacao y ON x.id < y.id AND x.id_sala <> y.id_sala
+            JOIN turma tx ON tx.id = x.id_turma JOIN turma ty ON ty.id = y.id_turma
+            JOIN disciplina dy ON dy.codigo = ty.id_disciplina JOIN sala sx ON sx.id = x.id_sala
+            WHERE x.status = 'RASCUNHO' AND y.status = 'RASCUNHO' AND x.horario_codigo = y.horario_codigo
+              AND GREATEST(ty.matriculados, 1) <= sx.capacidade AND (NOT dy.exige_laboratorio OR sx.tipo_espaco = 'Laboratório')
+            LIMIT 1`);
+        assert.ok(par, "par de turmas no mesmo horário");
+        await sql("UPDATE alocacao SET id_sala = $1 WHERE id_turma = $2", [par.sala, par.b]);
+
+        const conf = await json("/conflitos?semestre=2026.2");
+        assert.equal(conf.status, 200);
+        assert.deepEqual(conf.body.conflitos.map((c: { turmaId: number }) => c.turmaId).sort(), [par.a, par.b].sort());
+
+        const sug = await json("/sugestoes", { semestre: "2026.2" });
+        assert.equal(sug.status, 200);
+        assert.ok(sug.body.plano, JSON.stringify(sug.body.naoResolvidos));
+        assert.equal(sug.body.plano.custo.mudancasDeHorario, 0, "choque só de sala se resolve sem mexer em horário");
+        assert.ok(sug.body.alternativasPorTurma[par.a] || sug.body.alternativasPorTurma[par.b]);
+
+        const movimentos = sug.body.plano.mudancas.map((m: { turmaId: number; para: { salaId: number; horario: string } }) =>
+            ({ turmaId: m.turmaId, salaId: m.para.salaId, horario: m.para.horario }));
+        const lote = await json("/confirmar-lote", { movimentos });
+        assert.equal(lote.status, 200, JSON.stringify(lote.body));
+        assert.deepEqual((await json("/conflitos?semestre=2026.2")).body.conflitos, []);
+    });
+
     test("restrições do banco barram dados inválidos (defesa além da API)", async () => {
         const t = await idTurma("COMP360", "01");
         const s = await idSala("LCCV");
@@ -276,7 +318,7 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         // Simula um banco criado só com a 001 e com duplicatas antigas
         await m.migrator.resetarBanco();
         const r = await m.migrator.executarMigrations();
-        assert.equal(r.length, 2);
+        assert.equal(r.length, 3);
         await m.conn.query("DELETE FROM _migrations WHERE nome = '002_integridade_alocacao.sql'");
         await m.conn.query(`
             ALTER TABLE alocacao DROP CONSTRAINT uq_alocacao_turma;
@@ -292,5 +334,34 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         `);
         await m.migrator.executarMigrations();
         assert.deepEqual(await sql("SELECT horario_codigo FROM alocacao"), [{ horario_codigo: "3M12" }]);
+    });
+
+    test("migration 003 preenche aulas por semana de turmas antigas e corrige IART para IA", async () => {
+        // Banco que já tinha turmas antes da 003 (coluna ainda inexistente)
+        await m.migrator.resetarBanco();
+        await m.migrator.executarMigrations();
+        await m.conn.query("DELETE FROM _migrations WHERE nome = '003_aulas_semanais_e_curso_ia.sql'");
+        await m.conn.query(`
+            ALTER TABLE turma DROP CONSTRAINT ck_turma_aulas_semanais;
+            ALTER TABLE turma DROP COLUMN aulas_semanais;
+            INSERT INTO disciplina (codigo, nome, carga_horaria) VALUES ('C1', 'C', 60), ('IART001', 'IA', 72);
+            INSERT INTO turma (id_disciplina, codigo_turma, semestre, cursos_ofertados, vagas, horario_sigaa) VALUES
+                ('C1', '01', '2026.2', 'CC', 10, '35M34'),
+                ('C1', '02', '2026.2', 'CC', 10, '2T56 6T12'),
+                ('C1', '03', '2026.2', 'CC', 10, '2345M3456'),
+                ('C1', '04', '2026.2', 'CC', 10, ''),
+                ('IART001', '01', '2026.2', 'CC', 10, '4N1234');
+        `);
+        await m.migrator.executarMigrations();
+        assert.deepEqual(
+            await sql("SELECT id_disciplina AS d, codigo_turma AS c, cursos_ofertados AS cursos, aulas_semanais AS n FROM turma ORDER BY 1, 2"),
+            [
+                { d: "C1", c: "01", cursos: "CC", n: 4 },
+                { d: "C1", c: "02", cursos: "CC", n: 4 },
+                { d: "C1", c: "03", cursos: "CC", n: 16 },
+                { d: "C1", c: "04", cursos: "CC", n: null },
+                { d: "IART001", c: "01", cursos: "IA", n: 4 },
+            ],
+        );
     });
 });

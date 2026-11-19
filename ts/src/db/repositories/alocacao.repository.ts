@@ -117,6 +117,12 @@ export class AlocacaoRepository {
         return res.rowCount ?? 0;
     }
 
+    /** Tira a turma da grade (ela volta a ser pendente). Devolve quantas alocações foram removidas. */
+    async removerPorTurmaId(turmaId: number, db: Executor = executorPadrao): Promise<number> {
+        const res = await db.query("DELETE FROM alocacao WHERE id_turma = $1;", [turmaId]);
+        return res.rowCount ?? 0;
+    }
+
     /**
      * Grava (ou atualiza) a reserva EXTERNA_FIXA de uma turma de outro instituto numa sala do pool do IC.
      * Idempotente: rodar o seed de novo não duplica a reserva.

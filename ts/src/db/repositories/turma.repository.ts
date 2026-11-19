@@ -1,5 +1,6 @@
 import { executorPadrao, getClient, type Executor } from "../connection.ts";
 import { obterConjuntoSlots } from "../../shared/horario-sigaa.ts";
+import { contarAulas } from "../../shared/grade.ts";
 import type { Disciplina, Professor, Turma } from "../../shared/tipos.ts";
 import { parseHorarioIndisponivel } from "./professor.repository.ts";
 
@@ -12,7 +13,7 @@ export const COLUNAS_TURMA = `
     t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
     t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
     t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
-    t.horario_sigaa AS t_horario,
+    t.horario_sigaa AS t_horario, t.aulas_semanais AS t_aulas,
     d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
 `;
 
@@ -27,6 +28,7 @@ export interface TurmaRow {
     t_matriculados: number;
     t_requer_ic: boolean;
     t_horario: string;
+    t_aulas: number | null;
     d_codigo: string;
     d_nome: string;
     d_ch: number;
@@ -103,6 +105,15 @@ export async function carregarDocentesDasTurmas(
     return resultado;
 }
 
+/** Nº de aulas do horário; null se vazio ou ilegível (ler do banco nunca pode falhar por isso). */
+function aulasDoHorarioOuNulo(horario: string): number | null {
+    try {
+        return contarAulas(horario) || null;
+    } catch {
+        return null;
+    }
+}
+
 /** Converte uma linha turma+disciplina em Turma, já com os docentes hidratados. */
 export function mapearTurma(r: TurmaRow, docentes: Map<number, DocentesDaTurma>): Turma {
     const disciplina: Disciplina = {
@@ -123,6 +134,8 @@ export function mapearTurma(r: TurmaRow, docentes: Map<number, DocentesDaTurma>)
         matriculados: Number(r.t_matriculados),
         requerAlocacaoIc: Boolean(r.t_requer_ic),
         horarioSigaa: r.t_horario,
+        // Banco antigo (antes da migration 003) ou valor não informado: conta as aulas do horário
+        aulasSemanais: r.t_aulas != null ? Number(r.t_aulas) : aulasDoHorarioOuNulo(r.t_horario),
         professores: doc ? doc.professores : [],
         cargaHorariaPorDocente: doc ? doc.cargaHorariaPorDocente : {},
     };
@@ -131,7 +144,8 @@ export function mapearTurma(r: TurmaRow, docentes: Map<number, DocentesDaTurma>)
 export class TurmaRepository {
     async inserir(turma: Turma): Promise<Turma> {
         // Falha cedo com mensagem clara em vez de gravar um horário que o motor não sabe ler
-        obterConjuntoSlots(turma.horarioSigaa);
+        const aulasNoHorario = obterConjuntoSlots(turma.horarioSigaa).size;
+        const aulasSemanais = turma.aulasSemanais ?? (aulasNoHorario > 0 ? aulasNoHorario : null);
 
         const client = await getClient();
         try {
@@ -140,14 +154,15 @@ export class TurmaRepository {
             const sqlTurma = `
                 INSERT INTO turma (
                     id_disciplina, codigo_turma, semestre, cursos_ofertados,
-                    vagas, matriculados, requer_alocacao_ic, horario_sigaa
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    vagas, matriculados, requer_alocacao_ic, horario_sigaa, aulas_semanais
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (semestre, id_disciplina, codigo_turma) DO UPDATE
                 SET cursos_ofertados = EXCLUDED.cursos_ofertados,
                     vagas = EXCLUDED.vagas,
                     matriculados = EXCLUDED.matriculados,
                     requer_alocacao_ic = EXCLUDED.requer_alocacao_ic,
-                    horario_sigaa = EXCLUDED.horario_sigaa
+                    horario_sigaa = EXCLUDED.horario_sigaa,
+                    aulas_semanais = EXCLUDED.aulas_semanais
                 RETURNING id;
             `;
 
@@ -160,9 +175,11 @@ export class TurmaRepository {
                 turma.matriculados,
                 turma.requerAlocacaoIc,
                 turma.horarioSigaa,
+                aulasSemanais,
             ]);
 
             const turmaId = Number(res.rows[0].id);
+            turma.aulasSemanais = aulasSemanais;
             turma.id = turmaId;
 
             // Atualiza vínculos com professores

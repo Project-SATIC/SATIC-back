@@ -14,12 +14,16 @@
  *  - Nova checagem de escopo espacial (verificarEscopoEspacial), recomendada na seção 4.2
  *    do ANALISE_PROJETO.md para chamadas diretas pela API.
  *  - O diagnóstico devolve objetos { regra, mensagem } em vez de strings.
+ *  - O diagnóstico inclui as regras de formato do horário (FORMATO: nº de aulas e um bloco por dia;
+ *    TURNO: turnos do curso), definidas em grade.ts. O motor de salas não usa essas regras, porque
+ *    não muda horários.
  */
 import { haSobreposicao, obterConjuntoSlots, slotsDaIndisponibilidade } from "./horario-sigaa.ts";
 import { isLaboratorio, mesmaSala, mesmaTurma, numeroAlunos } from "./tipos.ts";
+import { verificarFormatoHorario } from "./grade.ts";
 import type { Alocacao, Sala, Turma } from "./tipos.ts";
 
-export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO";
+export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO" | "FORMATO" | "TURNO";
 
 export interface Violacao {
     regra: CodigoRegra;
@@ -140,5 +144,6 @@ export function diagnosticarViolacoes(
     if (!verificarChoqueProfessor(turma, alocacoesAtuais, horario)) {
         v.push({ regra: "RN-01", mensagem: `RN-01 Choque Docente: professor já alocado em outra turma no horário ${horario}.` });
     }
+    for (const p of verificarFormatoHorario(turma, horario)) v.push(p);
     return v;
 }

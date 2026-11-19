@@ -118,6 +118,7 @@ Retorna as turmas ofertadas, com suas disciplinas e professores vinculados (incl
       "vagas": 45,
       "matriculados": 42,
       "requerAlocacaoIc": true,
+      "aulasSemanais": 4,
       "professores": [
         {
           "matriculaSiape": "2024389",
@@ -291,8 +292,9 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
   }
   ```
   * `turmaId` (number, obrigatório): ID da turma.
-  * `salaId` (number, obrigatório): ID da sala pretendida.
-  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o `horarioSigaa` original da turma. Horário fora da notação SIGAA responde 400.
+  * `salaId` (number, **opcional** desde 19/11): sala pretendida. Se omitido, o servidor **mantém a sala atual** se ela continuar válida no novo horário; se não, **sugere a melhor sala livre** (Best-Fit, sala comum antes de laboratório para teóricas). A resposta traz `sala` e `origemSala` (`"pedida"`, `"mantida"` ou `"sugerida"`); sem sala possível, `salaId`/`sala` vêm `null`.
+  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o horário atual da alocação (ou o `horarioSigaa` da turma). Horário fora da notação SIGAA responde 400.
+  * Além de RN-01 a RN-04, sala e escopo, o diagnóstico inclui **`FORMATO`** (número de aulas por semana diferente do cadastro, ou mais de um bloco no mesmo dia) e **`TURNO`** (turno fora do curso: CC/EC manhã e tarde, IA noite). Ver [`modelo-aulas-e-motor-de-sugestoes.md`](./modelo-aulas-e-motor-de-sugestoes.md).
   * O semestre usado na checagem é sempre o da própria turma.
   * As checagens RN-01 (choque de docente, inclusive co-docentes) e RN-02 (indisponibilidade) usam os docentes cadastrados no banco para a turma movida e para todas as turmas já alocadas no semestre.
 * **Respostas de erro**: 400 (payload inválido) e 404 (turma ou sala inexistente).
@@ -377,6 +379,113 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 
 ---
 
+### `POST /api/alocacoes/confirmar-lote` ("Confirmar tudo" do rascunho)
+Aplica de uma vez as mudanças acumuladas no navegador. Tudo roda numa transação, com lock de cada semestre envolvido. Cada movimento é validado contra o estado que já inclui os anteriores aceitos, e os recusados não impedem os demais. Os recusados ganham uma segunda tentativa no fim, porque às vezes um movimento só cabe depois que outro libera a sala.
+
+* **Payload**:
+  ```json
+  {
+    "movimentos": [
+      { "turmaId": 12, "horario": "3M3456" },
+      { "turmaId": 30, "salaId": 4, "horario": "24T12" },
+      { "turmaId": 41, "acao": "remover" }
+    ]
+  }
+  ```
+  * Cada item aceita os mesmos campos de `/confirmar` (`salaId` opcional, `horario`, `status`) e `acao`: `"mover"` (padrão) ou `"remover"`, que tira a turma da grade e a deixa pendente.
+  * No máximo 200 movimentos. Um item malformado responde **400** para o lote inteiro, e nada é gravado.
+* **Resposta**: **200** se todos foram aceitos, **207** se só parte foi, **409** se nenhum foi.
+  ```json
+  {
+    "aceitos": 2,
+    "recusados": 1,
+    "resultados": [
+      { "indice": 0, "turmaId": 12, "sucesso": true, "mensagem": "...", "alocacao": { ... }, "origemSala": "mantida" },
+      { "indice": 1, "turmaId": 30, "sucesso": false, "mensagem": "...", "violacoes": [{ "regra": "SALA", "mensagem": "..." }] },
+      { "indice": 2, "turmaId": 41, "sucesso": true, "mensagem": "Turma retirada da grade; agora está pendente." }
+    ]
+  }
+  ```
+
+---
+
+### `GET /api/alocacoes/conflitos?semestre=2026.2`
+Conflitos e pendências do semestre, calculados pelo servidor com o mesmo validador.
+
+* **Resposta 200**:
+  ```json
+  {
+    "semestre": "2026.2",
+    "conflitos": [
+      { "turmaId": 12, "turma": "COMP360-01", "status": "RASCUNHO", "violacoes": [{ "regra": "SALA", "mensagem": "..." }] }
+    ],
+    "pendentes": [
+      { "turmaId": 50, "turma": "COMP399-01", "motivo": "sem sala" }
+    ]
+  }
+  ```
+  * `motivo` da pendência: `"sem sala"`, `"sem docente"` ou `"sem horário"`.
+
+---
+
+### `POST /api/alocacoes/sugestoes` (motor de horário + sala)
+Roda o motor de sugestões para os conflitos e pendências. **Não grava nada.** Para aplicar uma sugestão, o front envia as `mudancas` dela para `/confirmar-lote`. Turmas `DEFINITIVA` e `EXTERNA_FIXA` nunca são alteradas.
+
+* **Payload** (todos opcionais):
+  ```json
+  {
+    "semestre": "2026.2",
+    "alvos": [12, 30],
+    "permitirMudarFormato": [30],
+    "limiteNos": 200000,
+    "maxAlternativas": 3
+  }
+  ```
+  * `alvos`: turmas a resolver. Padrão: todas as em conflito e as pendentes que só não têm sala.
+  * `permitirMudarFormato`: turmas cujo formato o motor pode mudar (2+2 → 4 num dia etc.). A busca fica mais lenta.
+  * `limiteNos`: 1 a 1.000.000 (padrão 200.000).
+* **Resposta 200**:
+  ```json
+  {
+    "semestre": "2026.2",
+    "conflitos": [ ... ],
+    "pendentes": [ ... ],
+    "alvos": [12, 30],
+    "plano": {
+      "descricao": "COMP360-01: Sala 02 IC → Sala 04 IC; COMP362-01: 24T12 · Sala 03 IC → 24T34 · Sala 207 BL12",
+      "custo": { "turmasAlteradas": 2, "mudancasDeHorario": 1, "mudancasDeSala": 2, "pontos": 12 },
+      "mudancas": [
+        {
+          "turmaId": 12, "turma": "COMP360-01", "tipo": "sala",
+          "de":   { "salaId": 1, "sala": "Sala 02 IC", "horario": "24M34" },
+          "para": { "salaId": 3, "sala": "Sala 04 IC", "horario": "24M34" }
+        }
+      ]
+    },
+    "alternativasPorTurma": { "12": [ { "descricao": "...", "custo": { ... }, "mudancas": [ ... ] } ] },
+    "naoResolvidos": [],
+    "nosVisitados": 3037,
+    "limiteAtingido": false,
+    "tempoMs": 280
+  }
+  ```
+  * `tipo` da mudança: `"sala"`, `"horario"`, `"horario+sala"` ou `"nova"` (turma pendente que ganha sala).
+  * `plano`: tenta resolver todas as turmas juntas. `alternativasPorTurma`: até `maxAlternativas` opções por turma, cada uma considerando as demais turmas como estão, ordenadas por custo (horário pesa 10, sala pesa 1).
+  * `naoResolvidos`: turmas sem solução dentro do limite, ou que exigem decisão manual (por exemplo, duas confirmadas em conflito, ou turma sem docente).
+
+---
+
+### `GET /shared/{grade,horario-sigaa,tipos,validador}.js`
+O parser SIGAA, o modelo de grade e o validador do servidor, como **módulos ES** para o navegador. Com eles o front valida um movimento na hora com o mesmo código da confirmação. CORS liberado.
+
+```js
+const API = "http://localhost:3001";
+const { diagnosticarViolacoes } = await import(`${API}/shared/validador.js`);
+const { RELOGIO_AULAS, CURSOS, montarHorarioSigaa, blocosDoHorario } = await import(`${API}/shared/grade.js`);
+```
+
+---
+
 ## 4. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade
@@ -385,7 +494,13 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 2. Fazer `GET /api/turmas?semestre=2026.2` para obter os dados completos das turmas.
 3. Fazer `GET /api/alocacoes?semestre=2026.2` para posicionar os cards já alocados na grade.
 
-### Fluxo de Drag-and-Drop (Arrastar e Soltar)
+### Fluxo de Drag-and-Drop com rascunho (combinado em 19/11)
+1. Ao soltar aulas numa nova posição, o front monta o novo horário (`montarHorarioSigaa`) e valida **na hora** com `/shared/validador.js`, sem chamar o servidor. Se não houver problema, a mudança entra no rascunho com o contador "N alterações não salvas".
+2. **Confirmar tudo** → `POST /api/alocacoes/confirmar-lote` com o rascunho. Os itens aceitos saem do rascunho; os recusados ficam marcados com as `violacoes`.
+3. **Descartar** → recarrega `GET /api/alocacoes` e limpa o rascunho.
+4. **Resolver via motor** (Central de Conflitos) e **Gerar grade** → `POST /api/alocacoes/sugestoes`. Aceitar uma sugestão coloca as `mudancas` dela no rascunho.
+
+### Fluxo de Drag-and-Drop (movimento único, versão anterior)
 1. **Durante o arraste / soltura temporária**:
    * O front chama `POST /api/alocacoes/validar` enviando `{ turmaId, salaId, horario }`.
    * Se `valida === true`: a interface destaca o card em verde.

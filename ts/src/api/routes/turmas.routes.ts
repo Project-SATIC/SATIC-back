@@ -23,3 +23,15 @@ turmasRouter.get("/:id", async (req: Request, res: Response) => {
     if (!turma) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
     res.json(turma);
 });
+
+// -------------------------------------------------------------------------------------------------
+// Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.
+//
+// POST   /api/turmas                 cadastro de turma da pré-grade (disciplina, código, cursos, vagas,
+//                                    horário SIGAA, aulas por semana, docentes)
+// PUT    /api/turmas/:id             edição dos dados da turma (cursos, vagas, matriculados, aulas por semana)
+// PUT    /api/turmas/:id/professores troca/inclusão/remoção de docentes (turma sem docente = pendente)
+// PATCH  /api/turmas/:id/motor       { permitirMudarFormato: boolean }
+//   Configuração por turma (19/11/2026): deixa o motor de sugestões trocar o formato dos blocos
+//   (ex.: 2+2 -> 4 num dia). Exige coluna na tabela turma.
+// -------------------------------------------------------------------------------------------------

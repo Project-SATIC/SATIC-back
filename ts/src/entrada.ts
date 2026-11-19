@@ -77,6 +77,13 @@ export function lerListaDeTextosOpcional(valor: unknown, campo: string): string[
     return valor.map((v) => v.trim()).filter((v) => v !== "");
 }
 
+/** Lista opcional de ids inteiros positivos (ex.: turmas-alvo do motor). */
+export function lerListaDeIdsOpcional(valor: unknown, campo: string): number[] | undefined {
+    if (valor == null) return undefined;
+    if (!Array.isArray(valor)) throw new ErroRequisicao(`${campo} deve ser uma lista de ids`);
+    return valor.map((v, i) => lerId(v, `${campo}[${i}]`));
+}
+
 /** Corpo JSON como objeto (rejeita arrays e valores primitivos). */
 export function lerCorpo(body: unknown): Record<string, unknown> {
     if (body == null) return {};

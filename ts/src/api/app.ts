@@ -6,6 +6,7 @@ import { salasRouter } from "./routes/salas.routes.ts";
 import { professoresRouter } from "./routes/professores.routes.ts";
 import { turmasRouter } from "./routes/turmas.routes.ts";
 import { criarAlocacoesRouter, type ServicosAlocacao } from "./routes/alocacoes.routes.ts";
+import { sharedRouter } from "./routes/shared.routes.ts";
 import { ErroHttp } from "../erros.ts";
 import { FormatoHorarioInvalidoError } from "../shared/horario-sigaa.ts";
 
@@ -72,6 +73,9 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
     app.use("/api/turmas", turmasRouter);
     app.use("/api/alocacoes", criarAlocacoesRouter(opcoes.alocacoes));
 
+    // Parser SIGAA e validador compartilhados com o front (módulos ES)
+    app.use("/shared", sharedRouter);
+
     // Rota raiz informativa
     app.get("/", (_req: Request, res: Response) => {
         res.json({
@@ -86,6 +90,9 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
                     "/api/professores",
                     "/api/turmas",
                     "/api/alocacoes",
+                    "/shared/validador.js",
+                    "/shared/horario-sigaa.js",
+                    "/shared/tipos.js",
                 ],
             },
         });

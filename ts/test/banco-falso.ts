@@ -122,6 +122,11 @@ export class BancoFalso implements Executor {
             if (p[2] != null) a.status = p[2] as StatusAlocacao;
             return [{}];
         }
+        if (s.startsWith("DELETE FROM alocacao WHERE id_turma = $1")) {
+            const removidas = this.alocacoes.filter((a) => a.turmaId === Number(p[0]));
+            for (const r of removidas) this.alocacoes.splice(this.alocacoes.indexOf(r), 1);
+            return removidas.map(() => ({}));
+        }
         if (s.startsWith("DELETE FROM alocacao")) {
             const status = new Set(p[1] as string[]);
             const removidas = this.alocacoes.filter((a) => status.has(a.status) && this.#turma(a.turmaId).semestre === p[0]);
@@ -147,6 +152,7 @@ export class BancoFalso implements Executor {
         return {
             t_id: t.id, t_codigo: t.codigoTurma, t_semestre: t.semestre, t_cursos: t.cursosOfertados,
             t_vagas: t.vagas, t_matriculados: t.matriculados, t_requer_ic: t.requerAlocacaoIc, t_horario: t.horarioSigaa,
+            t_aulas: t.aulasSemanais ?? null,
             d_codigo: t.disciplina.codigo, d_nome: t.disciplina.nome, d_ch: t.disciplina.cargaHoraria, d_lab: t.disciplina.exigeLaboratorio,
         };
     }

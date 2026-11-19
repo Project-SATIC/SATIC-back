@@ -51,7 +51,7 @@ npm run dev
 
 ### 5. Rodar a Suíte de Testes
 ```powershell
-npm test            # 98 testes; não precisa instalar PostgreSQL (test/postgres-real.test.ts sobe um PostgreSQL real em memória com o PGlite)
+npm test            # 133 testes; não precisa instalar PostgreSQL (test/postgres-real.test.ts sobe um PostgreSQL real em memória com o PGlite)
 ```
 
 ---
@@ -74,7 +74,13 @@ Os contratos detalhados de requisição, resposta e guia de integração para o 
 | `GET` | `/api/alocacoes` | Lista alocações salvas (filtro: `semestre`) |
 | `POST` | `/api/alocacoes/gerar` | Executa o motor (MRV + Best-Fit) e troca os RASCUNHO numa transação, preservando EXTERNA_FIXA e DEFINITIVA |
 | `POST` | `/api/alocacoes/validar` | Validação ágil de drag-and-drop sem persistir |
-| `POST` | `/api/alocacoes/confirmar` | Valida e salva o remanejamento (retorna 409 se inválido) |
+| `POST` | `/api/alocacoes/confirmar` | Valida e salva o remanejamento (retorna 409 se inválido); `salaId` opcional |
+| `POST` | `/api/alocacoes/confirmar-lote` | "Confirmar tudo": aplica o rascunho do front (200 / 207 parcial / 409) |
+| `GET` | `/api/alocacoes/conflitos` | Conflitos e pendências do semestre |
+| `POST` | `/api/alocacoes/sugestoes` | Motor de sugestões: horário + sala para os conflitos, sem gravar |
+| `GET` | `/shared/*.js` | Parser SIGAA, modelo de grade e validador como módulos ES para o navegador |
+
+O modelo de **aulas de 50 minutos**, as regras de formato, os turnos por curso (CC/EC manhã e tarde, IA noite) e o motor de sugestões estão explicados em [`docs/modelo-aulas-e-motor-de-sugestoes.md`](../docs/modelo-aulas-e-motor-de-sugestoes.md).
 
 ---
 

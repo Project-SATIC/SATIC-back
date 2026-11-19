@@ -3,10 +3,13 @@ import { AlocacaoRepository } from "../../db/repositories/index.ts";
 import { AlocadorService, SEMESTRE_PADRAO } from "../../motor/alocador.service.ts";
 import { RemanejamentoService } from "../../motor/remanejamento.service.ts";
 import { MAX_NOS_BUSCA } from "../../motor/state-space-search.ts";
+import { SugestoesService } from "../../motor/sugestoes.service.ts";
+import { LIMITE_NOS_SUGESTOES } from "../../motor/sugestoes.ts";
 import {
     lerBooleanoOpcional,
     lerCorpo,
     lerInteiroOpcional,
+    lerListaDeIdsOpcional,
     lerListaDeTextosOpcional,
     lerSemestre,
 } from "../../entrada.ts";
@@ -17,7 +20,8 @@ export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 10;
 export interface ServicosAlocacao {
     alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">;
     alocador: Pick<AlocadorService, "gerarAlocacao">;
-    remanejamento: Pick<RemanejamentoService, "validar" | "confirmar">;
+    remanejamento: Pick<RemanejamentoService, "validar" | "confirmar" | "confirmarLote">;
+    sugestoes: Pick<SugestoesService, "sugerir" | "conflitos">;
 }
 
 /** Erros lançados nos handlers (ErroHttp, JSON inválido etc.) seguem para o handler global em app.ts. */
@@ -25,7 +29,28 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
     const alocacaoRepo = servicos.alocacaoRepo ?? new AlocacaoRepository();
     const alocador = servicos.alocador ?? new AlocadorService();
     const remanejamento = servicos.remanejamento ?? new RemanejamentoService();
+    const sugestoes = servicos.sugestoes ?? new SugestoesService();
     const router = Router();
+
+    /** Conflitos e pendências do semestre, como o servidor enxerga (Central de Conflitos). */
+    router.get("/conflitos", async (req: Request, res: Response) => {
+        res.json(await sugestoes.conflitos(lerSemestre(req.query.semestre, SEMESTRE_PADRAO)));
+    });
+
+    /**
+     * Motor de sugestões (horário + sala) para os conflitos e pendências. Não grava nada:
+     * para aplicar, o front envia as mudanças escolhidas para /confirmar-lote.
+     * Corpo: { semestre?, alvos?: turmaId[], permitirMudarFormato?: turmaId[], limiteNos?, maxAlternativas? }
+     */
+    router.post("/sugestoes", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        res.json(await sugestoes.sugerir(lerSemestre(body.semestre, SEMESTRE_PADRAO), {
+            alvos: lerListaDeIdsOpcional(body.alvos, "alvos"),
+            permitirMudarFormato: lerListaDeIdsOpcional(body.permitirMudarFormato, "permitirMudarFormato"),
+            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 5),
+            maxAlternativas: lerInteiroOpcional(body.maxAlternativas, "maxAlternativas", 0, 10),
+        }));
+    });
 
     router.get("/", async (req: Request, res: Response) => {
         const semestre = typeof req.query.semestre === "string" && req.query.semestre.trim() !== ""
@@ -61,6 +86,31 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
         });
         res.status(resultado.sucesso ? 200 : 409).json(resultado);
     });
+
+    /**
+     * "Confirmar tudo" do rascunho do front: { movimentos: [{ turmaId, salaId?, horario?, status?, acao? }] }.
+     * 200 quando todos foram aceitos; 207 (Multi-Status) quando parte foi recusada; 409 quando nenhum foi.
+     */
+    router.post("/confirmar-lote", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const resultado = await remanejamento.confirmarLote(body.movimentos);
+        const status = resultado.recusados === 0 ? 200 : resultado.aceitos === 0 ? 409 : 207;
+        res.status(status).json(resultado);
+    });
+
+    // ---------------------------------------------------------------------------------------------
+    // Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.
+    // Decisão de 19/11/2026: deixar aqui o lembrete do que falta no back.
+    //
+    // Motor de sugestões: falta ainda a etapa "mudar o HORÁRIO de outras turmas" (hoje a etapa C só
+    //   troca a sala de uma outra turma) e as preferências de docente ("preferencial") como critério.
+    //
+    // POST /api/alocacoes/publicar        { semestre }
+    //   Consolida a grade do semestre (marca como publicada, congela as DEFINITIVA) para enviar ao SIGAA.
+    //
+    // GET  /api/alocacoes/exportar?semestre=&formato=ics|csv|pdf
+    //   Exportação gerada no servidor. Hoje ICS, CSV e PDF (impressão) são gerados no navegador.
+    // ---------------------------------------------------------------------------------------------
 
     return router;
 }
