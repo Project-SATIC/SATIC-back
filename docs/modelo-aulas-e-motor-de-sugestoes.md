@@ -124,19 +124,22 @@ A busca é **heurística e limitada** (200.000 nós por padrão). Ela não testa
 
 **Ainda não faz:** mudar o *horário* de outras turmas (a etapa C só troca sala) e usar a disponibilidade "preferencial" dos professores como critério.
 
-## 7. O que ficou só no navegador
+## 7. O que ficou só no navegador e módulos pendentes
 
-Estas funções do front continuam funcionando, mas **não são salvas no servidor**. As rotas estão reservadas, como comentário, nos routers:
+Estas funções do front continuam funcionando apenas na sessão do navegador ou seguem pendentes (fora do escopo atual). As rotas estão reservadas, como comentário, nos routers:
 
-| Função | Rota reservada |
+| Função | Situação / Rota reservada |
 |---|---|
-| Cadastro e edição de espaços, status "Manutenção" | `POST/PUT /api/salas`, `PATCH /api/salas/:id/status` |
-| Disponibilidade "preferencial" do professor | `PUT /api/professores/:siape/disponibilidade` |
-| Cadastro e edição de turmas e troca de docentes | `POST/PUT /api/turmas`, `PUT /api/turmas/:id/professores` |
-| "Permitir mudar formato" salvo por turma | `PATCH /api/turmas/:id/motor` |
-| Publicar a grade | `POST /api/alocacoes/publicar` |
-| Exportação gerada no servidor | `GET /api/alocacoes/exportar` (hoje o navegador gera ICS, PDF e CSV) |
-| Prioridades do gerador ("agrupar horários", "preferências") | parte do motor de sugestões (seção 6) |
+| Cadastro e edição de espaços, status "Manutenção" | Só navegador (`POST/PUT /api/salas`, `PATCH /api/salas/:id/status`) |
+| Disponibilidade "preferencial" do professor | Só navegador (`PUT /api/professores/:siape/disponibilidade`) |
+| Cadastro e edição de turmas e troca de docentes | Só navegador (`POST/PUT /api/turmas`, `PUT /api/turmas/:id/professores`) |
+| "Permitir mudar formato" salvo por turma | Só parâmetro de requisição (`PATCH /api/turmas/:id/motor`) |
+| Publicar a grade | Só navegador (`POST /api/alocacoes/publicar`) |
+| Exportação gerada no servidor | Só navegador gera ICS, PDF da grade oficial e CSV (`GET /api/alocacoes/exportar`) |
+| Exportação **"Grade por professor (PDF)"** | **Pendente / fora de escopo atual** (não é requisito funcional no momento; botão exibe aviso de não implementada) |
+| Exportação **"Planilha SIAP (XLSX)"** | **Pendente / não implementada** |
+| Prioridades do gerador ("agrupar horários", "preferências") | Pendente no motor de sugestões (seção 6) |
+| Autenticação/autorização da API | **Uso local ou intranet restrita do IC/UFAL** (não público na internet). Em servidor interno, rodar com `NODE_ENV=production` (oculta `detalhes` internos em erros 500/503) e `CORS_ORIGIN` configurado; se exposto externamente, adicionar autenticação/proxy. |
 
 Quando a API ou o banco estão fora do ar, o front mostra um aviso com "Tentar de novo". Não existe modo de demonstração com dados de exemplo.
 

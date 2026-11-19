@@ -20,7 +20,7 @@
  *
  * Módulo puro (sem banco): o SugestoesService carrega os dados e chama `sugerirResolucoes`.
  */
-import { obterConjuntoSlots } from "../shared/horario-sigaa.ts";
+import { FormatoHorarioInvalidoError, obterConjuntoSlots } from "../shared/horario-sigaa.ts";
 import {
     AULAS_POR_TURNO, DIAS_GRADE, aulasDoHorario, blocosDoHorario, formatoDoHorario, idAula,
     montarHorarioSigaa, turnosPermitidos, verificarFormatoHorario,
@@ -29,10 +29,10 @@ import {
 import { chaveTurma, mesmaTurma } from "../shared/tipos.ts";
 import type { Alocacao, DiaSemana, Sala, Turma } from "../shared/tipos.ts";
 import {
-    diagnosticarViolacoes, verificarCapacidade, verificarChoqueProfessor, verificarChoqueSala,
+    diagnosticarViolacoes, ordenarSalasSoftConstraint, verificarCapacidade, verificarChoqueProfessor, verificarChoqueSala,
     verificarEscopoEspacial, verificarIndisponibilidade, verificarRequisitoLab, type Violacao,
 } from "../shared/validador.ts";
-import { StateSpaceSearch, ordenarSalasSoftConstraint } from "./state-space-search.ts";
+import { StateSpaceSearch } from "./state-space-search.ts";
 
 export interface OpcoesSugestao {
     /** Turmas a resolver; padrão: todas as em conflito + pendentes com horário e docente. */
@@ -94,6 +94,36 @@ const MAX_CANDIDATOS_HORARIO = 5_000;
 
 const IMUTAVEIS = new Set(["DEFINITIVA", "EXTERNA_FIXA"]);
 
+function horarioLegivel(h: string | null | undefined): boolean {
+    if (h == null || h.trim() === "") return true;
+    try {
+        obterConjuntoSlots(h);
+        return true;
+    } catch (err) {
+        if (err instanceof FormatoHorarioInvalidoError) return false;
+        throw err;
+    }
+}
+
+function slotsSeguro(h: string | null | undefined): ReadonlySet<string> {
+    if (h == null || h.trim() === "") return new Set();
+    try {
+        return obterConjuntoSlots(h);
+    } catch (err) {
+        if (err instanceof FormatoHorarioInvalidoError) return new Set();
+        throw err;
+    }
+}
+
+function aulasSeguro(h: string | null | undefined): Aula[] {
+    try {
+        return aulasDoHorario(h);
+    } catch (err) {
+        if (err instanceof FormatoHorarioInvalidoError) return [];
+        throw err;
+    }
+}
+
 /** Horário efetivo: o da alocação (pode ter sido remanejado) ou o da pré-grade. */
 function horarioEfetivo(turma: Turma, alocacao: Alocacao | undefined): string {
     return alocacao?.horarioCodigo ?? turma.horarioSigaa ?? "";
@@ -140,7 +170,7 @@ function mudanca(turma: Turma, atual: Alocacao | undefined, sala: Sala, horario:
  * (SAB só se a turma já tinha aula no sábado).
  */
 export function gerarHorariosCandidatos(turma: Turma, horarioAtual: string, mudarFormato = false): string[] {
-    const aulasAtuais = aulasDoHorario(horarioAtual);
+    const aulasAtuais = aulasSeguro(horarioAtual);
     const total = turma.aulasSemanais ?? aulasAtuais.length;
     if (total <= 0) return [];
     const turnos = turnosPermitidos(turma);
@@ -148,7 +178,7 @@ export function gerarHorariosCandidatos(turma: Turma, horarioAtual: string, muda
     const dias = DIAS_GRADE.filter((d) => d !== "SAB" || aulasAtuais.some((a) => a.dia === "SAB"));
 
     const formatos: number[][] = [];
-    const formatoAtual = aulasAtuais.length === total ? formatoDoHorario(horarioAtual) : [];
+    const formatoAtual = aulasAtuais.length === total && aulasAtuais.length > 0 ? formatoDoHorario(horarioAtual) : [];
     if (formatoAtual.length > 0) formatos.push(formatoAtual);
     if (mudarFormato || formatoAtual.length === 0) {
         // Partições de `total` em partes decrescentes de até maxBloco, no máximo uma por dia
@@ -224,6 +254,7 @@ function salaLivre(turma: Turma, horario: string, salas: readonly Sala[], estado
 
 /** RN-01, RN-02 e formato: o que só se resolve mudando o horário. */
 function horarioAceitavel(turma: Turma, horario: string, estado: Estado): boolean {
+    if (!horarioLegivel(horario)) return false;
     const t = comHorario(turma, horario);
     return verificarIndisponibilidade(t, horario)
         && verificarChoqueProfessor(t, estado.alocacoes, horario)
@@ -245,18 +276,25 @@ export function sugerirResolucoes(
 
     const alocPorTurma = new Map<number, Alocacao>();
     for (const a of alocacoes) if (a.turma.id != null) alocPorTurma.set(a.turma.id, a);
+    const alocacoesLegiveis = alocacoes.filter((a) => horarioLegivel(a.horarioCodigo));
 
     // 1. Conflitos atuais e pendências
     const conflitos: ConflitoTurma[] = [];
     for (const a of alocacoes) {
         if (a.status === "EXTERNA_FIXA") continue;
-        const v = diagnosticarViolacoes(a.turma, a.sala, alocacoes, a.horarioCodigo);
+        if (!horarioLegivel(a.horarioCodigo)) {
+            const v = diagnosticarViolacoes(a.turma, a.sala, alocacoesLegiveis, "");
+            v.push({ regra: "FORMATO", mensagem: `Horário SIGAA ilegível: '${a.horarioCodigo}'.` });
+            conflitos.push({ turmaId: a.turma.id!, turma: chaveTurma(a.turma), status: a.status, violacoes: v });
+            continue;
+        }
+        const v = diagnosticarViolacoes(a.turma, a.sala, alocacoesLegiveis, a.horarioCodigo);
         if (v.length > 0) conflitos.push({ turmaId: a.turma.id!, turma: chaveTurma(a.turma), status: a.status, violacoes: v });
     }
     const pendentes: ResultadoSugestoes["pendentes"] = [];
     for (const t of turmas) {
         if (!t.requerAlocacaoIc || alocPorTurma.has(t.id!)) continue;
-        const motivo = !t.horarioSigaa || obterConjuntoSlots(t.horarioSigaa).size === 0 ? "sem horário"
+        const motivo = !t.horarioSigaa || slotsSeguro(t.horarioSigaa).size === 0 ? "sem horário"
             : t.professores.length === 0 ? "sem docente" : "sem sala";
         pendentes.push({ turmaId: t.id!, turma: chaveTurma(t), motivo });
     }
@@ -267,11 +305,6 @@ export function sugerirResolucoes(
         ...conflitos.filter((c) => !IMUTAVEIS.has(c.status)).map((c) => c.turmaId),
         ...pendentes.filter((p) => p.motivo === "sem sala").map((p) => p.turmaId),
     ];
-    for (const c of conflitos.filter((x) => IMUTAVEIS.has(x.status))) {
-        // Conflito entre confirmadas só some se a outra ponta (não confirmada) for alvo
-        const outraPontaMovel = conflitos.some((o) => o.turmaId !== c.turmaId && !IMUTAVEIS.has(o.status));
-        if (!outraPontaMovel) naoResolvidos.push({ turmaId: c.turmaId, turma: c.turma, motivo: "turma confirmada em conflito com outra confirmada: exige decisão manual" });
-    }
     for (const p of pendentes.filter((x) => x.motivo !== "sem sala")) {
         naoResolvidos.push({ turmaId: p.turmaId, turma: p.turma, motivo: `pendente ${p.motivo}: preencha antes de rodar o motor` });
     }
@@ -282,7 +315,7 @@ export function sugerirResolucoes(
     const turmaPorId = new Map(turmas.map((t) => [t.id!, t]));
     const alvosTurmas = alvos.map((id) => turmaPorId.get(id)).filter((t): t is Turma => !!t);
 
-    const fixas = alocacoes.filter((a) => !alvos.includes(a.turma.id!));
+    const fixas = alocacoesLegiveis.filter((a) => !alvos.includes(a.turma.id!));
     const estado: Estado = { alocacoes: [...fixas] };
     const planoMudancas: Mudanca[] = [];
     const resolvidos = new Set<number>();
@@ -296,7 +329,7 @@ export function sugerirResolucoes(
     for (const t of ordemManter) {
         const atual = alocPorTurma.get(t.id!);
         const h = horarioEfetivo(t, atual);
-        if (obterConjuntoSlots(h).size === 0 || !horarioAceitavel(t, h, referencia)) continue;
+        if (slotsSeguro(h).size === 0 || !horarioAceitavel(t, h, referencia)) continue;
         comHorarioValido.push(t);
         referencia.alocacoes.push({ turma: t, sala: atual?.sala ?? salasDoPool[0], horarioCodigo: h, status: "RASCUNHO" });
     }
@@ -326,7 +359,7 @@ export function sugerirResolucoes(
         const atual = alocPorTurma.get(t.id!);
         const hAtual = horarioEfetivo(t, atual);
         const candidatos = [hAtual, ...gerarHorariosCandidatos(t, hAtual, mudarFormato.has(t.id!))]
-            .filter((h) => obterConjuntoSlots(h).size > 0);
+            .filter((h) => slotsSeguro(h).size > 0);
         for (const h of candidatos) {
             if (!gastar()) break;
             if (!horarioAceitavel(t, h, estado)) continue;
@@ -347,7 +380,7 @@ export function sugerirResolucoes(
         if (nos > limite) break;
         const atual = alocPorTurma.get(t.id!);
         const horarios = [horarioEfetivo(t, atual), ...gerarHorariosCandidatos(t, horarioEfetivo(t, atual), mudarFormato.has(t.id!))]
-            .filter((h) => obterConjuntoSlots(h).size > 0);
+            .filter((h) => slotsSeguro(h).size > 0);
         let feito = false;
         for (const h of horarios) {
             if (feito || !gastar()) break;
@@ -358,9 +391,12 @@ export function sugerirResolucoes(
                 .sort(ordenarSalasSoftConstraint(tH));
             for (const s of salasCompativeis) {
                 if (!gastar()) break;
-                const ocupantes = estado.alocacoes.filter((a) => a.sala.id === s.id && !mesmaTurma(a.turma, t)
-                    && obterConjuntoSlots(a.horarioCodigo).size > 0
-                    && [...obterConjuntoSlots(h)].some((x) => obterConjuntoSlots(a.horarioCodigo).has(x)));
+                const slotsH = slotsSeguro(h);
+                const ocupantes = estado.alocacoes.filter((a) => {
+                    if (a.sala.id !== s.id || mesmaTurma(a.turma, t)) return false;
+                    const slotsA = slotsSeguro(a.horarioCodigo);
+                    return slotsA.size > 0 && [...slotsH].some((x) => slotsA.has(x));
+                });
                 if (ocupantes.length !== 1) continue;
                 const o = ocupantes[0];
                 if (IMUTAVEIS.has(o.status) || planoMudancas.some((m) => m.turmaId === o.turma.id)) continue;
@@ -377,6 +413,20 @@ export function sugerirResolucoes(
         }
     }
 
+    for (const a of estado.alocacoes) {
+        if (a.status !== "DEFINITIVA") continue;
+        const v = horarioLegivel(a.horarioCodigo)
+            ? diagnosticarViolacoes(a.turma, a.sala, estado.alocacoes, a.horarioCodigo)
+            : [{ regra: "FORMATO" as const, mensagem: `Horário SIGAA ilegível: '${a.horarioCodigo}'.` }];
+        if (v.length > 0) {
+            const regras = [...new Set(v.map((x) => x.regra))].join(", ");
+            naoResolvidos.push({
+                turmaId: a.turma.id!,
+                turma: chaveTurma(a.turma),
+                motivo: `turma confirmada continua em conflito (${regras}): exige decisão manual`,
+            });
+        }
+    }
     for (const t of alvosTurmas.filter((x) => !resolvidos.has(x.id!))) {
         const atual = alocPorTurma.get(t.id!);
         const motivo = conflitos.find((c) => c.turmaId === t.id)?.violacoes.map((v) => v.regra).join(", ") ?? "sem sala";
@@ -388,11 +438,11 @@ export function sugerirResolucoes(
     for (const t of alvosTurmas) {
         if (nos > limite) break;
         const atual = alocPorTurma.get(t.id!);
-        const outros: Estado = { alocacoes: alocacoes.filter((a) => !mesmaTurma(a.turma, t)) };
+        const outros: Estado = { alocacoes: alocacoesLegiveis.filter((a) => !mesmaTurma(a.turma, t)) };
         const opcoesT: Sugestao[] = [];
         const hAtual = horarioEfetivo(t, atual);
         // Primeiro: mesma hora, outra sala (mais barato)
-        if (obterConjuntoSlots(hAtual).size > 0 && horarioAceitavel(t, hAtual, outros)) {
+        if (slotsSeguro(hAtual).size > 0 && horarioAceitavel(t, hAtual, outros)) {
             const tH = comHorario(t, hAtual);
             const salas = salasDoPool
                 .filter((s) => s.id !== atual?.sala.id && verificarCapacidade(tH, s) && verificarRequisitoLab(tH, s) && verificarEscopoEspacial(tH, s)

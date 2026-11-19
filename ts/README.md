@@ -47,7 +47,7 @@ PGDATABASE=satic
 Dentro da pasta `ts/`:
 ```powershell
 cd ts
-npm run migrate     # 001: 7 tabelas do modelo lógico; 002: restrições de integridade (1 alocação por turma, status, CHECKs)
+npm run migrate     # 001: 7 tabelas do modelo lógico; 002: integridade (1 alocação/turma, status, CHECKs); 003: aulas_semanais e IART como IA
 npm run db:seed     # Salas, docentes e ofertas 2026.2 + as 2 reservas EXTERNA_FIXA (IF0001-05, FALE0002-03)
 ```
 
@@ -58,9 +58,10 @@ npm start           # Inicia em http://localhost:3001
 npm run dev
 ```
 
-### 5. Rodar a Suíte de Testes
+### 5. Rodar a Suíte de Testes e Checagem de Tipos
 ```powershell
-npm test            # 133 testes; não precisa instalar PostgreSQL (test/postgres-real.test.ts sobe um PostgreSQL real em memória com o PGlite)
+npm run typecheck   # tsc --noEmit (strict: true)
+npm test            # 151 testes; não precisa instalar PostgreSQL (test/postgres-real.test.ts sobe um PostgreSQL real em memória com o PGlite)
 ```
 
 ---
@@ -100,5 +101,5 @@ O modelo de **aulas de 50 minutos**, as regras de formato, os turnos por curso (
 * **Lock por semestre** (`pg_advisory_xact_lock`): `/gerar` e `/confirmar` do mesmo semestre nunca gravam em paralelo, nem entre processos.
 * **RN-01/RN-02 com dados do banco**: toda turma carregada (inclusive dentro de uma alocação) vem com docentes e indisponibilidades, hidratados em lote.
 * **Ordenação binária** (`COLLATE "C"`) nas consultas que alimentam o motor, para o resultado não depender da collation do servidor e bater com o Java.
-* **Erros**: 400 para entrada inválida, 404 para recurso inexistente, 409 para regra violada, 503 para banco indisponível (`src/erros.ts` + handler em `src/api/app.ts`).
-* **`CORS_ORIGIN`** (opcional, no `.env`): lista de origens aceitas, separadas por vírgula. Sem ela, qualquer origem é aceita.
+* **Erros**: 400 para entrada inválida, 404 para recurso inexistente, 409 para regra violada, 503 para banco indisponível (`src/erros.ts` + handler em `src/api/app.ts`). Com `NODE_ENV=production`, detalhes internos de banco são omitidos das respostas 500/503.
+* **`CORS_ORIGIN`** (opcional, no `.env`): lista de origens aceitas, separadas por vírgula. Sem ela, qualquer origem é aceita (uso local). Em servidor interno do IC/UFAL, defina `NODE_ENV=production` e `CORS_ORIGIN`.

@@ -21,6 +21,7 @@
  * da API fica com 1 conexão; e o adaptador TCP fecha a conexão após um erro de SQL, que o pool
  * reabre sozinho.
  */
+import "dotenv/config";
 import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
@@ -159,7 +160,7 @@ async function main(): Promise<void> {
     }
 
     // O pool da API e dos scripts aponta para este banco (sobrepõe o .env)
-    delete process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "";
     Object.assign(process.env, {
         PGHOST: "127.0.0.1",
         PGPORT: String(porta),
@@ -191,21 +192,28 @@ async function main(): Promise<void> {
     const { executarMigrations } = await import("../src/db/migrator.ts");
     const { executarSeed } = await import("../src/seed/db-seeder.ts");
 
-    const resultados = await executarMigrations();
-    const aplicadas = resultados.filter((r) => r.status === "aplicada").length;
-    console.log(`[SATIC-LOCAL] Migrations: ${aplicadas} aplicada(s), ${resultados.length - aplicadas} já existente(s).`);
+    try {
+        const resultados = await executarMigrations();
+        const aplicadas = resultados.filter((r) => r.status === "aplicada").length;
+        console.log(`[SATIC-LOCAL] Migrations: ${aplicadas} aplicada(s), ${resultados.length - aplicadas} já existente(s).`);
 
-    const { rows } = await query<{ n: number }>("SELECT COUNT(*)::int AS n FROM turma;");
-    if (rows[0].n === 0) {
-        console.log(`[SATIC-LOCAL] Banco vazio: rodando o seed 2026.2${amostra ? " (AMOSTRA para testes manuais)" : ""}...`);
-        const r = await executarSeed({ amostra });
-        console.log(`[SATIC-LOCAL] Seed: ${r.turmas} turmas, ${r.salas} salas, ${r.reservasExternas} reservas EXTERNA_FIXA.`);
-        // Grade inicial pelo motor de salas, para a interface já abrir preenchida
-        const { AlocadorService } = await import("../src/motor/alocador.service.ts");
-        const g = await new AlocadorService().gerarAlocacao({ semestre: "2026.2" });
-        console.log(`[SATIC-LOCAL] Grade inicial gerada: ${g.resumo.alocadas} de ${g.resumo.totalTurmas} turmas alocadas${g.resumo.pendentes ? `, ${g.resumo.pendentes} pendente(s)` : ""}.`);
-    } else {
-        console.log(`[SATIC-LOCAL] Banco já povoado (${rows[0].n} turmas${amostra ? ", amostra" : ""}). Use --resetar para recriar do zero.`);
+        const { rows } = await query<{ n: number }>("SELECT COUNT(*)::int AS n FROM turma;");
+        if (rows[0].n === 0) {
+            console.log(`[SATIC-LOCAL] Banco vazio: rodando o seed 2026.2${amostra ? " (AMOSTRA para testes manuais)" : ""}...`);
+            const r = await executarSeed({ amostra });
+            console.log(`[SATIC-LOCAL] Seed: ${r.turmas} turmas, ${r.salas} salas, ${r.reservasExternas} reservas EXTERNA_FIXA.`);
+            // Grade inicial pelo motor de salas, para a interface já abrir preenchida
+            const { AlocadorService } = await import("../src/motor/alocador.service.ts");
+            const g = await new AlocadorService().gerarAlocacao({ semestre: "2026.2" });
+            console.log(`[SATIC-LOCAL] Grade inicial gerada: ${g.resumo.alocadas} de ${g.resumo.totalTurmas} turmas alocadas${g.resumo.pendentes ? `, ${g.resumo.pendentes} pendente(s)` : ""}.`);
+        } else {
+            console.log(`[SATIC-LOCAL] Banco já povoado (${rows[0].n} turmas${amostra ? ", amostra" : ""}). Use --resetar para recriar do zero.`);
+        }
+    } catch (err) {
+        await closePool().catch(() => undefined);
+        await servidorBanco.stop().catch(() => undefined);
+        await db.close().catch(() => undefined);
+        throw err;
     }
 
     let encerrando = false;
@@ -225,7 +233,6 @@ async function main(): Promise<void> {
 
     // 3. API
     if (comApi) {
-        await import("dotenv/config");
         const { criarApp } = await import("../src/api/app.ts");
         servidorApi = criarApp().listen(portaApi, () => {
             console.log(`[SATIC-LOCAL] API Express em http://localhost:${portaApi} (health: /api/health)`);

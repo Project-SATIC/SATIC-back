@@ -12,10 +12,11 @@ import {
     lerListaDeIdsOpcional,
     lerListaDeTextosOpcional,
     lerSemestre,
+    lerSemestreOpcionalQuery,
 } from "../../entrada.ts";
 
-/** Teto do limite de nós aceito pela API (10x o padrão do motor) para uma requisição não travar o servidor. */
-export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 10;
+/** Teto do limite de nós aceito pela API (2x o padrão do motor) para uma requisição não travar o servidor. */
+export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 2;
 
 export interface ServicosAlocacao {
     alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">;
@@ -48,15 +49,13 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
         res.json(await sugestoes.sugerir(lerSemestre(body.semestre, SEMESTRE_PADRAO), {
             alvos: lerListaDeIdsOpcional(body.alvos, "alvos"),
             permitirMudarFormato: lerListaDeIdsOpcional(body.permitirMudarFormato, "permitirMudarFormato"),
-            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 5),
+            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 2),
             maxAlternativas: lerInteiroOpcional(body.maxAlternativas, "maxAlternativas", 0, 10),
         }, lerMovimentosRascunho(body.movimentos)));
     });
 
     router.get("/", async (req: Request, res: Response) => {
-        const semestre = typeof req.query.semestre === "string" && req.query.semestre.trim() !== ""
-            ? lerSemestre(req.query.semestre)
-            : undefined;
+        const semestre = lerSemestreOpcionalQuery(req.query.semestre);
         res.json(semestre ? await alocacaoRepo.listarPorSemestre(semestre) : await alocacaoRepo.listarTodas());
     });
 
@@ -110,7 +109,9 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
     //   Consolida a grade do semestre (marca como publicada, congela as DEFINITIVA) para enviar ao SIGAA.
     //
     // GET  /api/alocacoes/exportar?semestre=&formato=ics|csv|pdf
-    //   Exportação gerada no servidor. Hoje ICS, CSV e PDF (impressão) são gerados no navegador.
+    //   Exportação gerada no servidor. Hoje ICS, CSV e PDF da grade oficial (impressão) são
+    //   gerados no navegador. "Grade por professor (PDF)" e "Planilha SIAP (XLSX)" estão pendentes
+    //   / fora do escopo atual (não implementadas).
     // ---------------------------------------------------------------------------------------------
 
     return router;

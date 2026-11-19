@@ -1,18 +1,23 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors, { type CorsOptions } from "cors";
-import { healthRouter } from "./routes/health.routes.ts";
-import { disciplinasRouter } from "./routes/disciplinas.routes.ts";
-import { salasRouter } from "./routes/salas.routes.ts";
-import { professoresRouter } from "./routes/professores.routes.ts";
-import { turmasRouter } from "./routes/turmas.routes.ts";
+import { criarHealthRouter, type VerificadorBanco } from "./routes/health.routes.ts";
+import { criarDisciplinasRouter, type RepoDisciplinasRota } from "./routes/disciplinas.routes.ts";
+import { criarSalasRouter, type RepoSalasRota } from "./routes/salas.routes.ts";
+import { criarProfessoresRouter, type RepoProfessoresRota } from "./routes/professores.routes.ts";
+import { criarTurmasRouter, type RepoTurmasRota } from "./routes/turmas.routes.ts";
 import { criarAlocacoesRouter, type ServicosAlocacao } from "./routes/alocacoes.routes.ts";
 import { sharedRouter } from "./routes/shared.routes.ts";
 import { ErroHttp } from "../erros.ts";
 import { FormatoHorarioInvalidoError } from "../shared/horario-sigaa.ts";
 
 export interface OpcoesApp {
-    /** Substitui serviços de alocação (usado nos testes para não depender do PostgreSQL). */
+    /** Substitui serviços/repositórios nos testes para não depender do PostgreSQL. */
     alocacoes?: Partial<ServicosAlocacao>;
+    turmasRepo?: RepoTurmasRota;
+    salasRepo?: RepoSalasRota;
+    disciplinasRepo?: RepoDisciplinasRota;
+    professoresRepo?: RepoProfessoresRota;
+    testConnection?: VerificadorBanco;
 }
 
 /**
@@ -41,10 +46,10 @@ function isBancoIndisponivel(err: unknown): boolean {
     return /timeout exceeded when trying to connect|Connection terminated/i.test(msg);
 }
 
-/** Violação de integridade do PostgreSQL: 23505 (unique) e 23503 (foreign key). */
+/** Violação de integridade do PostgreSQL: 23505 (unique), 23503 (foreign key) e 23514 (check). */
 function codigoIntegridade(err: unknown): string | undefined {
     const codigo = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-    return codigo === "23505" || codigo === "23503" ? codigo : undefined;
+    return codigo === "23505" || codigo === "23503" || codigo === "23514" ? codigo : undefined;
 }
 
 function mensagemDe(err: unknown): string {
@@ -66,11 +71,11 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
     app.use(express.json({ limit: "1mb" }));
 
     // Rotas da API
-    app.use("/api/health", healthRouter);
-    app.use("/api/disciplinas", disciplinasRouter);
-    app.use("/api/salas", salasRouter);
-    app.use("/api/professores", professoresRouter);
-    app.use("/api/turmas", turmasRouter);
+    app.use("/api/health", criarHealthRouter(opcoes.testConnection));
+    app.use("/api/disciplinas", criarDisciplinasRouter(opcoes.disciplinasRepo));
+    app.use("/api/salas", criarSalasRouter(opcoes.salasRepo));
+    app.use("/api/professores", criarProfessoresRouter(opcoes.professoresRepo));
+    app.use("/api/turmas", criarTurmasRouter(opcoes.turmasRepo));
     app.use("/api/alocacoes", criarAlocacoesRouter(opcoes.alocacoes));
 
     // Parser SIGAA e validador compartilhados com o front (módulos ES)
@@ -90,6 +95,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
                     "/api/professores",
                     "/api/turmas",
                     "/api/alocacoes",
+                    "/shared/grade.js",
                     "/shared/validador.js",
                     "/shared/horario-sigaa.js",
                     "/shared/tipos.js",
@@ -117,9 +123,10 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
             res.status(err.status).json({ erro: "Corpo da requisição inválido", detalhes: err.message });
             return;
         }
+        const emProducao = process.env.NODE_ENV === "production";
         if (isBancoIndisponivel(err)) {
             console.error("[SATIC-API] PostgreSQL indisponível:", mensagemDe(err));
-            res.status(503).json({ erro: "Banco de dados indisponível", detalhes: mensagemDe(err) });
+            res.status(503).json(emProducao ? { erro: "Banco de dados indisponível" } : { erro: "Banco de dados indisponível", detalhes: mensagemDe(err) });
             return;
         }
         if (codigoIntegridade(err)) {
@@ -127,7 +134,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
             return;
         }
         console.error("[SATIC-API] Erro não tratado:", err);
-        res.status(500).json({ erro: "Erro interno no servidor", detalhes: mensagemDe(err) });
+        res.status(500).json(emProducao ? { erro: "Erro interno no servidor" } : { erro: "Erro interno no servidor", detalhes: mensagemDe(err) });
     });
 
     return app;

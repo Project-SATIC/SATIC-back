@@ -144,24 +144,36 @@ describe("API HTTP - validação de entrada e contrato de erros", () => {
         assert.equal(lista.find((a: { turma: { id: number } }) => a.turma.id === t).sala.nome, "LCCV");
     });
 
-    test("GET /api/alocacoes com semestre malformado responde 400", async () => {
+    test("GET /api/alocacoes com semestre malformado ou repetido responde 400", async () => {
         assert.equal((await fetch(`${base}/api/alocacoes?semestre=abc`)).status, 400);
+        assert.equal((await fetch(`${base}/api/alocacoes?semestre=2026.2&semestre=2026.1`)).status, 400);
+        assert.equal((await fetch(`${base}/api/turmas?semestre=2026.2&semestre=2026.1`)).status, 400);
+        assert.equal((await fetch(`${base}/api/salas?bloco=IC&bloco=IM`)).status, 400);
     });
 
-    test("GET /api/salas/abc e /api/turmas/0 respondem 400 antes de consultar o banco", async () => {
+    test("GET /api/salas/abc, /api/turmas/0 e ids > INT4 respondem 400 antes de consultar o banco", async () => {
         assert.equal((await fetch(`${base}/api/salas/abc`)).status, 400);
         assert.equal((await fetch(`${base}/api/turmas/0`)).status, 400);
+        assert.equal((await fetch(`${base}/api/turmas/999999999999`)).status, 400);
         assert.equal((await fetch(`${base}/api/turmas?requer_ic=talvez`)).status, 400);
     });
 
-    test("falha de conexão com o PostgreSQL vira 503 e violação de UNIQUE vira 409", async () => {
+    test("GET / inclui /shared/grade.js nas rotas documentadas", async () => {
+        const res = await fetch(`${base}/`);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.ok(body.documentacao.rotas.includes("/shared/grade.js"));
+    });
+
+    test("falha de conexão com o PostgreSQL vira 503 e violação de integridade (23505/23514) vira 409", async () => {
         const conexaoRecusada = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
         const duplicada = Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
+        const checkViolado = Object.assign(new Error("new row violates check constraint"), { code: "23514" });
         const appFalho = criarApp({
             alocacoes: {
                 alocacaoRepo: {
                     listarTodas: async () => { throw new AggregateError([conexaoRecusada], ""); },
-                    listarPorSemestre: async () => { throw duplicada; },
+                    listarPorSemestre: async (s) => { throw (s === "2026.1" ? checkViolado : duplicada); },
                 },
             },
         });
@@ -173,6 +185,8 @@ describe("API HTTP - validação de entrada e contrato de erros", () => {
             assert.equal((await r1.json()).erro, "Banco de dados indisponível");
             const r2 = await fetch(url + "?semestre=2026.2");
             assert.equal(r2.status, 409);
+            const r3 = await fetch(url + "?semestre=2026.1");
+            assert.equal(r3.status, 409);
         } finally {
             await new Promise<void>((resolve) => srv.close(() => resolve()));
         }
@@ -181,5 +195,45 @@ describe("API HTTP - validação de entrada e contrato de erros", () => {
     test("CORS habilitado por padrão para o front local", async () => {
         const res = await fetch(`${base}/`, { headers: { origin: "http://127.0.0.1:8040" } });
         assert.equal(res.headers.get("access-control-allow-origin"), "*");
+    });
+
+    test("SEC-04: horário > 120 chars e limiteNos acima dos tetos respondem 400", async () => {
+        const horarioLongo = "2M12 ".repeat(30).trim();
+        const rH = await post("/api/alocacoes/validar", { turmaId: 1, salaId: 1, horario: horarioLongo });
+        assert.equal(rH.status, 400);
+        assert.match(rH.body.erro, /muito longo/);
+        assert.equal((await post("/api/alocacoes/gerar", { limiteNos: 600_001 })).status, 400);
+        assert.equal((await post("/api/alocacoes/sugestoes", { limiteNos: 400_001 })).status, 400);
+    });
+
+    test("SEC-05: NODE_ENV=production oculta detalhes internos em respostas 500 e 503", async () => {
+        const conexaoRecusada = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
+        const appFalho = criarApp({
+            alocacoes: {
+                alocacaoRepo: {
+                    listarTodas: async () => { throw new AggregateError([conexaoRecusada], ""); },
+                    listarPorSemestre: async () => { throw new Error("detalhe interno secreto do sql"); },
+                },
+            },
+        });
+        const srv = await new Promise<Server>((resolve) => { const s = appFalho.listen(0, "127.0.0.1", () => resolve(s)); });
+        const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/alocacoes`;
+        const envAnterior = process.env.NODE_ENV;
+        process.env.NODE_ENV = "production";
+        try {
+            const r503 = await fetch(url);
+            assert.equal(r503.status, 503);
+            const b503 = await r503.json();
+            assert.equal(b503.detalhes, undefined);
+
+            const r500 = await fetch(url + "?semestre=2026.2");
+            assert.equal(r500.status, 500);
+            const b500 = await r500.json();
+            assert.equal(b500.detalhes, undefined);
+        } finally {
+            if (envAnterior === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = envAnterior;
+            await new Promise<void>((resolve) => srv.close(() => resolve()));
+        }
     });
 });

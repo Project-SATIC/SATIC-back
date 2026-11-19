@@ -64,6 +64,8 @@ describe("Grade em aulas de 50 minutos", () => {
         assert.deepEqual(verificarFormatoHorario(cc, "35N12").map((p) => p.regra), ["TURNO"], "CC à noite");
         assert.deepEqual(verificarFormatoHorario({ cursosOfertados: "IA", aulasSemanais: 4 }, "35M34").map((p) => p.regra), ["TURNO"]);
         assert.deepEqual(verificarFormatoHorario({ cursosOfertados: "IA", aulasSemanais: 4 }, "4N1234"), []);
+        assert.deepEqual(verificarFormatoHorario({ cursosOfertados: "IA", aulasSemanais: 2 }, "4N56").map((p) => p.regra), ["FORMATO"], "noite só vai até N4");
+        assert.deepEqual(verificarFormatoHorario({ cursosOfertados: "IA" }, "2N5").map((p) => p.regra), ["FORMATO"], "N5 fora do relógio");
         assert.deepEqual(verificarFormatoHorario(cc, ""), [], "sem horário: é pendência, não erro de formato");
         assert.deepEqual(verificarFormatoHorario({ cursosOfertados: "CC" }, "35M3"), [], "sem aulasSemanais cadastrado, não cobra a contagem");
     });

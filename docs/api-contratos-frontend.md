@@ -209,8 +209,16 @@ Retorna as alocações físicas registradas no banco de dados.
         "codigoTurma": "01",
         "semestre": "2026.2",
         "disciplina": { "codigo": "COMP360", "nome": "PROGRAMAÇÃO 1", "cargaHoraria": 60, "exigeLaboratorio": true },
+        "professores": [
+          { "matriculaSiape": "2024389", "nome": "RANILSON OSCAR ARAUJO PAIVA", "indisponibilidades": [] }
+        ],
+        "cargaHorariaPorDocente": { "2024389": 60 },
+        "cursosOfertados": "CC",
+        "horarioSigaa": "35M34",
         "vagas": 45,
-        "matriculados": 42
+        "matriculados": 42,
+        "requerAlocacaoIc": true,
+        "aulasSemanais": 4
       },
       "sala": {
         "id": 6,
@@ -245,7 +253,7 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
   * `semestre` (string, opcional): Padrão `"2026.2"`. Formato `AAAA.S`.
   * `persistir` (boolean, opcional): Padrão `true`. Se `false`, atua em modo *preview* (simulação sem gravar no banco).
   * `semSalas` (string[], opcional): Lista de nomes de salas a desconsiderar no cálculo.
-  * `limiteNos` (inteiro, opcional): Limite de nós da busca, de 1 a 3.000.000. Padrão: 300.000, o mesmo do motor Java.
+  * `limiteNos` (inteiro, opcional): Limite de nós da busca, de 1 a 600.000. Padrão: 300.000, o mesmo do motor Java.
   * `preservarDefinitivas` (boolean, opcional): Padrão `true`. As alocações `DEFINITIVA` entram no motor como fixas e não são recalculadas. Com `false`, elas são descartadas e o motor decide de novo a sala dessas turmas.
 
 * **O que acontece com `persistir: true`**: leitura, busca e gravação rodam numa única transação, com lock do semestre. São apagadas só as alocações `RASCUNHO` (e as `DEFINITIVA`, se `preservarDefinitivas: false`) e gravadas as novas. As reservas `EXTERNA_FIXA` nunca são apagadas. Se algo falhar, nada muda no banco.
@@ -305,6 +313,15 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
     "valida": true,
     "turmaId": 12,
     "salaId": 3,
+    "sala": {
+      "id": 3,
+      "nome": "Sala 04 IC",
+      "capacidade": 45,
+      "tipoEspaco": "Sala",
+      "bloco": "IC",
+      "alocavelIc": true
+    },
+    "origemSala": "pedida",
     "horario": "35T34",
     "violacoes": []
   }
@@ -316,6 +333,15 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
     "valida": false,
     "turmaId": 12,
     "salaId": 3,
+    "sala": {
+      "id": 3,
+      "nome": "Sala 04 IC",
+      "capacidade": 45,
+      "tipoEspaco": "Sala",
+      "bloco": "IC",
+      "alocavelIc": true
+    },
+    "origemSala": "pedida",
     "horario": "35T34",
     "violacoes": [
       {

@@ -170,7 +170,38 @@ describe("Motor de sugestões com o rascunho do front", () => {
         assert.equal(semEla.length, alocacoes.length - 1);
         assert.ok(sugerirResolucoes(base.turmas, salas, semEla).pendentes.some((p) => p.turmaId === alvo.turma.id));
         assert.throws(() => lerMovimentosRascunho([{ turmaId: "x" }]), /movimentos\[0\]/);
+        assert.throws(() => lerMovimentosRascunho([{ turmaId: 1, acao: "apagar" }]), /acao/);
+        assert.throws(() => lerMovimentosRascunho(Array.from({ length: 201 }, () => ({ turmaId: 1 }))), /200/);
         assert.throws(() => lerMovimentosRascunho({}), /lista/);
+    });
+
+    test("horário ilegível no banco não derruba sugestoes nem conflitos", () => {
+        const { base, salas, alocacoes } = gradeReal();
+        const alvo = alocacoes.find((a) => a.status === "RASCUNHO")!;
+        alvo.horarioCodigo = "24X99";
+        const r = sugerirResolucoes(base.turmas, salas, alocacoes);
+        assert.ok(r.conflitos.some((c) => c.turmaId === alvo.turma.id && c.violacoes.some((v) => v.regra === "FORMATO")));
+    });
+
+    test("conflito em DEFINITIVA continua em naoResolvidos mesmo havendo RASCUNHO em conflito no semestre", () => {
+        const { base, salas, alocacoes, porChave } = gradeReal();
+        const fixa = porChave("COMP373-02");
+        fixa.status = "DEFINITIVA";
+        // Garante RN-02 na DEFINITIVA
+        const prof = fixa.turma.professores[0];
+        const primeiroSlot = expandirParaSlotsAtomicos(fixa.horarioCodigo)[0]!;
+        prof.indisponibilidades.push({
+            professorMatricula: prof.matriculaSiape,
+            diaSemana: primeiroSlot.slice(0, 3),
+            turno: primeiroSlot.slice(4, 5),
+            indiceHorario: primeiroSlot.slice(5),
+        });
+        // Outro conflito não relacionado numa RASCUNHO
+        const rasc = alocacoes.find((a) => a.status === "RASCUNHO" && a !== fixa)!;
+        rasc.sala = salas.find((s) => s.capacidade < rasc.turma.matriculados)!;
+
+        const r = sugerirResolucoes(base.turmas, salas, alocacoes);
+        assert.ok(r.naoResolvidos.some((n) => n.turmaId === fixa.turma.id), JSON.stringify(r.naoResolvidos));
     });
 });
 

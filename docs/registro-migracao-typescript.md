@@ -1,6 +1,8 @@
 # Registro de mudança: back-end Java → TypeScript + Express
 
-**Data:** 17/11/2026 · **Branch:** `ts-back-dev` (criada a partir de `lg-back-dev`) · **Situação:** etapa 1 de 4 concluída
+> **Nota histórica (19/11/2026):** Este documento registra apenas a **etapa 1** da migração (17/11/2026). As etapas seguintes (PostgreSQL com migrations 001–003, API Express e integração com `SATIC-front` na branch `integracao-api`) já foram concluídas; consulte [`ts/README.md`](../ts/README.md), [`api-contratos-frontend.md`](./api-contratos-frontend.md) e [`modelo-aulas-e-motor-de-sugestoes.md`](./modelo-aulas-e-motor-de-sugestoes.md) para a documentação atual.
+
+**Data:** 17/11/2026 · **Branch:** `ts-back-dev` (criada a partir de `lg-back-dev`) · **Situação:** registro histórico da etapa 1 de 4
 
 ## O que mudou
 

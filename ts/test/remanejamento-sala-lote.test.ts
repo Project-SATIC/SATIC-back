@@ -165,6 +165,71 @@ describe("Remanejamento: Confirmar tudo (lote)", () => {
         await assert.rejects(() => servico.confirmarLote([]), /lista não vazia/);
         assert.equal(JSON.stringify(banco.alocacoes), antes);
     });
+
+    test("cadeia de 3 movimentos dependentes de um inválido é integralmente recusada sem corromper salas", async () => {
+        const { banco, servico } = cenario();
+        // A vai para horário inválido; B quer a vaga de A (Sala 04 em 35M34); C quer a vaga de B (Sala 03 em 35M34)
+        const r = await servico.confirmarLote([
+            { turmaId: 1, horario: "3M3" },
+            { turmaId: 2, salaId: 3, horario: "35M34" },
+            { turmaId: 3, salaId: 2, horario: "35M34" },
+        ]);
+        assert.equal(r.aceitos, 0, JSON.stringify(r.resultados));
+        assert.equal(r.recusados, 3);
+        assert.equal(salaDe(banco, 1)?.salaId, 3);
+        assert.equal(salaDe(banco, 2)?.salaId, 2);
+        assert.equal(salaDe(banco, 3)?.salaId, 3);
+        assert.equal(salaDe(banco, 3)?.horario, "24T12");
+    });
+
+    test("candidato inválido (RN-03) não envenena candidato válido na mesma sala", async () => {
+        for (const inverterOrdem of [false, true]) {
+            const { banco, servico } = cenario();
+            const d = turma(4, disciplina("C4", "TEORIA C4", 60, false), "01", "2026.2", "CC", "24M12", 50, 50, true, professor("400", "DARIO"));
+            d.aulasSemanais = 4;
+            banco.turmas.push(d);
+            const movA = { turmaId: 1, salaId: 3, horario: "24M12" }; // 40 alunos -> cabe na Sala 04 (40)
+            const movD = { turmaId: 4, salaId: 3, horario: "24M12" }; // 50 alunos -> RN-03 na Sala 04 (40)
+            const r = await servico.confirmarLote(inverterOrdem ? [movD, movA] : [movA, movD]);
+            assert.equal(r.aceitos, 1, JSON.stringify(r.resultados));
+            assert.equal(r.recusados, 1);
+            assert.equal(salaDe(banco, 1)?.salaId, 3);
+            assert.equal(salaDe(banco, 1)?.horario, "24M12");
+            assert.equal(salaDe(banco, 4), undefined);
+        }
+    });
+
+    test("sala automática antes de sala explícita no mesmo horário não causa rejeição por ordem", async () => {
+        const { banco, servico } = cenario();
+        // Sala 04 (40) e Sala 03 (45) livres em 24M34; A não pede sala (Best-Fit iria para Sala 04), B pede Sala 04
+        const r = await servico.confirmarLote([
+            { turmaId: 1, horario: "24M34" },
+            { turmaId: 2, salaId: 3, horario: "24M34" },
+        ]);
+        assert.equal(r.aceitos, 2, JSON.stringify(r.resultados));
+        assert.equal(r.recusados, 0);
+        assert.equal(salaDe(banco, 2)?.salaId, 3);
+        assert.equal(salaDe(banco, 1)?.salaId, 2);
+    });
+
+    test("acao: 'remover' recusa remoção de reserva EXTERNA_FIXA e mantém a sala bloqueada", async () => {
+        const { banco, servico } = cenario();
+        const ext = turma(4, disciplina("IF0001", "FISICA", 60, false), "05", "2026.2", "CC", "35T56", 30, 30, false, professor("400", "DARIO"));
+        ext.aulasSemanais = 4;
+        banco.turmas.push(ext);
+        banco.inserirAlocacao(4, 3, "35T56", "EXTERNA_FIXA");
+
+        const r = await servico.confirmarLote([
+            { turmaId: 4, acao: "remover" },
+            { turmaId: 1, salaId: 3, horario: "35T56" },
+        ]);
+        assert.equal(r.aceitos, 0, JSON.stringify(r.resultados));
+        assert.equal(r.recusados, 2);
+        assert.equal(r.resultados[0].violacoes?.[0].regra, "EXTERNA_FIXA");
+        assert.equal(r.resultados[1].violacoes?.[0].regra, "SALA");
+        assert.equal(salaDe(banco, 4)?.status, "EXTERNA_FIXA");
+        assert.equal(salaDe(banco, 4)?.salaId, 3);
+    });
 });
 
 describe("POST /api/alocacoes/confirmar-lote (HTTP)", () => {
@@ -202,5 +267,19 @@ describe("POST /api/alocacoes/confirmar-lote (HTTP)", () => {
         assert.equal(r.body.valida, true);
         assert.equal(r.body.origemSala, "mantida");
         assert.equal(r.body.sala.nome, "Sala 04 IC");
+    });
+
+    test("movimentos repetidos da mesma turma com último inválido respondem 409 (nunca 207 falso)", async () => {
+        const antes = salaDe(banco, 1)?.horario;
+        const r = await post("/confirmar-lote", {
+            movimentos: [
+                { turmaId: 1, horario: "24M56" },
+                { turmaId: 1, horario: "3M3" },
+            ],
+        });
+        assert.equal(r.status, 409, JSON.stringify(r.body));
+        assert.equal(r.body.aceitos, 0);
+        assert.equal(r.body.recusados, 2);
+        assert.equal(salaDe(banco, 1)?.horario, antes);
     });
 });

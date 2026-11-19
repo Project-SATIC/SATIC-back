@@ -60,20 +60,22 @@ Substitua `;` por `:` no classpath (`-cp "bin:lib/*"` e `-cp "bin-test:bin:lib/*
 
 ## Versão TypeScript (`ts/`)
 
-Requisito: **Node.js 22.18 ou mais recente** (confira com `node -v`). Não é preciso instalar nenhum pacote: o Node executa os arquivos `.ts` diretamente.
+Requisito: **Node.js 22.18 ou mais recente** (confira com `node -v`).
 
 ### Windows (PowerShell), Linux e macOS
 
-**1. Entrar na pasta da nova versão:**
+**1. Entrar na pasta e instalar dependências:**
 ```powershell
 cd ts
+npm install
 ```
 
-**2. Rodar os testes** (parser SIGAA, validador, motor e comparação com o resultado do Java):
+**2. Checar tipos e rodar os testes** (parser SIGAA, validador, motor, API, PGlite e gabaritos do Java):
 ```powershell
+npm run typecheck
 npm test
 ```
-O resultado esperado termina em `pass 36` e `fail 0`.
+O resultado esperado termina em `pass 151` e `fail 0`.
 
 > No PowerShell do Windows, se aparecer o erro *"a execução de scripts foi desabilitada neste sistema"*, use `npm.cmd test` e `npm.cmd run motor`, ou rode direto com o Node: `node --test "test/**/*.test.ts"` e `node tools/rodar-motor.ts`.
 

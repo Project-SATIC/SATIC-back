@@ -1,28 +1,33 @@
 import { Router, type Request, type Response } from "express";
 import { TurmaRepository } from "../../db/repositories/index.ts";
-import { lerBooleanoOpcional, lerId, lerSemestre } from "../../entrada.ts";
+import { lerBooleanoOpcional, lerId, lerSemestreOpcionalQuery } from "../../entrada.ts";
 import { ErroNaoEncontrado } from "../../erros.ts";
 
-export const turmasRouter = Router();
-const repo = new TurmaRepository();
+export type RepoTurmasRota = Pick<TurmaRepository, "listarPorSemestre" | "listarTodas" | "buscarPorId">;
 
-turmasRouter.get("/", async (req: Request, res: Response) => {
-    const semestre = typeof req.query.semestre === "string" && req.query.semestre.trim() !== ""
-        ? lerSemestre(req.query.semestre)
-        : undefined;
-    const requerIc = lerBooleanoOpcional(req.query.requer_ic, "requer_ic");
+export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()): Router {
+    const router = Router();
 
-    let turmas = semestre ? await repo.listarPorSemestre(semestre) : await repo.listarTodas();
-    if (requerIc !== undefined) turmas = turmas.filter((t) => t.requerAlocacaoIc === requerIc);
-    res.json(turmas);
-});
+    router.get("/", async (req: Request, res: Response) => {
+        const semestre = lerSemestreOpcionalQuery(req.query.semestre);
+        const requerIc = lerBooleanoOpcional(req.query.requer_ic, "requer_ic");
 
-turmasRouter.get("/:id", async (req: Request, res: Response) => {
-    const id = lerId(req.params.id, "id");
-    const turma = await repo.buscarPorId(id);
-    if (!turma) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
-    res.json(turma);
-});
+        let turmas = semestre ? await repo.listarPorSemestre(semestre) : await repo.listarTodas();
+        if (requerIc !== undefined) turmas = turmas.filter((t) => t.requerAlocacaoIc === requerIc);
+        res.json(turmas);
+    });
+
+    router.get("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const turma = await repo.buscarPorId(id);
+        if (!turma) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
+        res.json(turma);
+    });
+
+    return router;
+}
+
+export const turmasRouter = criarTurmasRouter();
 
 // -------------------------------------------------------------------------------------------------
 // Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.

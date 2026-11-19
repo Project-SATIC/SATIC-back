@@ -7,6 +7,7 @@ import {
     haSobreposicao,
     obterConjuntoSlots,
     slotsDaIndisponibilidade,
+    tamanhoCacheSlots,
 } from "../src/shared/horario-sigaa.ts";
 
 describe("Parser de horários SIGAA", () => {
@@ -47,8 +48,19 @@ describe("Parser de horários SIGAA", () => {
         assert.equal(haSobreposicao(null, "2M12"), false);
     });
 
-    it("expande indisponibilidade com dia por sigla ou por dígito SIGAA", () => {
+    it("expande indisponibilidade com dia por sigla, dígito SIGAA ou múltiplos dígitos", () => {
         assert.deepEqual(slotsDaIndisponibilidade({ professorMatricula: "1", diaSemana: "SEX", turno: "T", indiceHorario: "56" }), ["SEX-T5", "SEX-T6"]);
         assert.deepEqual(slotsDaIndisponibilidade({ professorMatricula: "1", diaSemana: "3", turno: "m", indiceHorario: " 34 " }), ["TER-M3", "TER-M4"]);
+        assert.deepEqual(slotsDaIndisponibilidade({ professorMatricula: "1", diaSemana: "35", turno: "T", indiceHorario: "56" }), ["TER-T5", "TER-T6", "QUI-T5", "QUI-T6"]);
+    });
+
+    it("mantém CACHE_SLOTS limitado mesmo após milhares de expressões distintas", () => {
+        for (let i = 0; i < 5000; i++) {
+            const pad = " ".repeat((i % 5) + 1);
+            const prefixo = i % 2 === 0 ? "2M12" : "35T34";
+            const s = obterConjuntoSlots(`${prefixo}${pad}4N${(i % 4) + 1}`);
+            assert.ok(s.size >= 3);
+        }
+        assert.ok(tamanhoCacheSlots() <= 4096, `cache cresceu para ${tamanhoCacheSlots()}`);
     });
 });

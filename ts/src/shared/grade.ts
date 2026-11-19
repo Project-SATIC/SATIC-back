@@ -204,6 +204,14 @@ export function verificarFormatoHorario(
     if (aulas.length === 0) return [];
     const problemas: ProblemaFormato[] = [];
 
+    const foraRelogio = aulas.filter((a) => a.indice < 1 || a.indice > AULAS_POR_TURNO[a.turno]).map(idAula);
+    if (foraRelogio.length > 0) {
+        problemas.push({
+            regra: "FORMATO",
+            mensagem: `Aula fora do relógio do turno: ${foraRelogio.join(", ")} (noite vai de N1 a N4).`,
+        });
+    }
+
     const esperado = turma.aulasSemanais;
     if (esperado != null && esperado > 0 && aulas.length !== esperado) {
         problemas.push({ regra: "FORMATO", mensagem: `A turma tem ${esperado} aula(s) por semana, mas o horário ${horario} tem ${aulas.length}.` });

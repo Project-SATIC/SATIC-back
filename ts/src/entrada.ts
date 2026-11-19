@@ -9,14 +9,30 @@ import type { StatusAlocacao } from "./shared/tipos.ts";
 export const STATUS_ALOCACAO: readonly StatusAlocacao[] = Object.freeze(["RASCUNHO", "DEFINITIVA", "EXTERNA_FIXA"]);
 
 const SEMESTRE_PATTERN = /^\d{4}\.[12]$/;
+const MAX_INT4 = 2_147_483_647;
 
-/** Inteiro positivo (aceita número ou string numérica, ex: "12"). */
+/** Inteiro positivo de 32 bits (aceita número ou string numérica, ex: "12"). */
 export function lerId(valor: unknown, campo: string): number {
     const n = typeof valor === "string" && valor.trim() !== "" ? Number(valor) : valor;
-    if (typeof n !== "number" || !Number.isSafeInteger(n) || n <= 0) {
-        throw new ErroRequisicao(`${campo} é obrigatório e deve ser um inteiro positivo`);
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n <= 0 || n > MAX_INT4) {
+        throw new ErroRequisicao(`${campo} é obrigatório e deve ser um inteiro positivo válido`);
     }
     return n;
+}
+
+/** Semestre opcional em query string: vazio/ausente -> undefined; repetido (?semestre=a&semestre=b) -> 400. */
+export function lerSemestreOpcionalQuery(valor: unknown): string | undefined {
+    if (valor === undefined) return undefined;
+    if (typeof valor === "string" && valor.trim() === "") return undefined;
+    return lerSemestre(valor);
+}
+
+/** Texto opcional em query string: rejeita parâmetros repetidos (array) com 400. */
+export function lerTextoOpcionalQuery(valor: unknown, campo: string): string | undefined {
+    if (valor === undefined) return undefined;
+    if (typeof valor !== "string") throw new ErroRequisicao(`${campo} deve ser um texto único`);
+    const limpo = valor.trim();
+    return limpo === "" ? undefined : limpo;
 }
 
 /** Semestre no formato AAAA.S (ex: "2026.2"). */
@@ -36,6 +52,7 @@ export function lerHorarioOpcional(valor: unknown): string | undefined {
     if (valor == null || (typeof valor === "string" && valor.trim() === "")) return undefined;
     if (typeof valor !== "string") throw new ErroRequisicao("horario deve ser uma string no formato SIGAA (ex: \"35T34\")");
     const horario = valor.trim().toUpperCase().replace(/\s+/g, " ");
+    if (horario.length > 120) throw new ErroRequisicao("horario muito longo (máximo 120 caracteres)");
     try {
         obterConjuntoSlots(horario);
     } catch (err) {

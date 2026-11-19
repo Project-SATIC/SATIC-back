@@ -1,4 +1,4 @@
-import { executorPadrao, getClient, type Executor } from "../connection.ts";
+import { comTransacao, executorPadrao, type Executor } from "../connection.ts";
 import { obterConjuntoSlots } from "../../shared/horario-sigaa.ts";
 import { contarAulas } from "../../shared/grade.ts";
 import type { Disciplina, Professor, Turma } from "../../shared/tipos.ts";
@@ -147,10 +147,7 @@ export class TurmaRepository {
         const aulasNoHorario = obterConjuntoSlots(turma.horarioSigaa).size;
         const aulasSemanais = turma.aulasSemanais ?? (aulasNoHorario > 0 ? aulasNoHorario : null);
 
-        const client = await getClient();
-        try {
-            await client.query("BEGIN;");
-
+        return comTransacao(async (db) => {
             const sqlTurma = `
                 INSERT INTO turma (
                     id_disciplina, codigo_turma, semestre, cursos_ofertados,
@@ -166,7 +163,7 @@ export class TurmaRepository {
                 RETURNING id;
             `;
 
-            const res = await client.query<{ id: number }>(sqlTurma, [
+            const res = await db.query<{ id: number }>(sqlTurma, [
                 turma.disciplina.codigo,
                 turma.codigoTurma,
                 turma.semestre,
@@ -183,7 +180,7 @@ export class TurmaRepository {
             turma.id = turmaId;
 
             // Atualiza vínculos com professores
-            await client.query("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId]);
+            await db.query("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId]);
 
             const sqlVinculo = `
                 INSERT INTO professor_turma (matricula_siape, id_turma, carga_horaria_professor)
@@ -194,17 +191,11 @@ export class TurmaRepository {
 
             for (const prof of turma.professores) {
                 const carga = turma.cargaHorariaPorDocente?.[prof.matriculaSiape] ?? turma.disciplina.cargaHoraria;
-                await client.query(sqlVinculo, [prof.matriculaSiape, turmaId, carga]);
+                await db.query(sqlVinculo, [prof.matriculaSiape, turmaId, carga]);
             }
 
-            await client.query("COMMIT;");
             return turma;
-        } catch (err) {
-            await client.query("ROLLBACK;").catch(() => undefined);
-            throw err;
-        } finally {
-            client.release();
-        }
+        });
     }
 
     async inserirMuitas(turmas: readonly Turma[]): Promise<void> {

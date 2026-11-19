@@ -5,6 +5,7 @@
 import { AlocacaoRepository, SalaRepository, TurmaRepository } from "../db/repositories/index.ts";
 import { executorPadrao, type Executor } from "../db/connection.ts";
 import { ErroNaoEncontrado } from "../erros.ts";
+import { LIMITE_MOVIMENTOS_LOTE } from "./remanejamento.service.ts";
 import { sugerirResolucoes, type OpcoesSugestao, type ResultadoSugestoes } from "./sugestoes.ts";
 import { ErroRequisicao } from "../erros.ts";
 import { lerHorarioOpcional, lerId } from "../entrada.ts";
@@ -22,8 +23,14 @@ export interface MovimentoRascunho {
 export function lerMovimentosRascunho(valor: unknown): MovimentoRascunho[] {
     if (valor == null) return [];
     if (!Array.isArray(valor)) throw new ErroRequisicao("movimentos deve ser uma lista");
+    if (valor.length > LIMITE_MOVIMENTOS_LOTE) {
+        throw new ErroRequisicao(`no máximo ${LIMITE_MOVIMENTOS_LOTE} movimentos no rascunho`);
+    }
     return valor.map((m, i) => {
         const item = (m ?? {}) as Record<string, unknown>;
+        if (item.acao != null && item.acao !== "mover" && item.acao !== "remover") {
+            throw new ErroRequisicao(`movimentos[${i}].acao deve ser "mover" ou "remover"`);
+        }
         try {
             const acao = item.acao === "remover" ? "remover" : "mover";
             return {

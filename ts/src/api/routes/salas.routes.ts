@@ -1,27 +1,34 @@
 import { Router, type Request, type Response } from "express";
 import { SalaRepository } from "../../db/repositories/index.ts";
-import { lerBooleanoOpcional, lerId } from "../../entrada.ts";
+import { lerBooleanoOpcional, lerId, lerTextoOpcionalQuery } from "../../entrada.ts";
 import { ErroNaoEncontrado } from "../../erros.ts";
 
-export const salasRouter = Router();
-const repo = new SalaRepository();
+export type RepoSalasRota = Pick<SalaRepository, "listarTodas" | "buscarPorId">;
 
-salasRouter.get("/", async (req: Request, res: Response) => {
-    const alocavelIc = lerBooleanoOpcional(req.query.alocavel_ic, "alocavel_ic");
-    const bloco = typeof req.query.bloco === "string" ? req.query.bloco.trim().toLowerCase() : "";
+export function criarSalasRouter(repo: RepoSalasRota = new SalaRepository()): Router {
+    const router = Router();
 
-    let salas = await repo.listarTodas();
-    if (alocavelIc !== undefined) salas = salas.filter((s) => s.alocavelIc === alocavelIc);
-    if (bloco !== "") salas = salas.filter((s) => s.bloco.toLowerCase() === bloco);
-    res.json(salas);
-});
+    router.get("/", async (req: Request, res: Response) => {
+        const alocavelIc = lerBooleanoOpcional(req.query.alocavel_ic, "alocavel_ic");
+        const bloco = (lerTextoOpcionalQuery(req.query.bloco, "bloco") ?? "").toLowerCase();
 
-salasRouter.get("/:id", async (req: Request, res: Response) => {
-    const id = lerId(req.params.id, "id");
-    const sala = await repo.buscarPorId(id);
-    if (!sala) throw new ErroNaoEncontrado(`Sala de id ${id} não encontrada`);
-    res.json(sala);
-});
+        let salas = await repo.listarTodas();
+        if (alocavelIc !== undefined) salas = salas.filter((s) => s.alocavelIc === alocavelIc);
+        if (bloco !== "") salas = salas.filter((s) => s.bloco.toLowerCase() === bloco);
+        res.json(salas);
+    });
+
+    router.get("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const sala = await repo.buscarPorId(id);
+        if (!sala) throw new ErroNaoEncontrado(`Sala de id ${id} não encontrada`);
+        res.json(sala);
+    });
+
+    return router;
+}
+
+export const salasRouter = criarSalasRouter();
 
 // -------------------------------------------------------------------------------------------------
 // Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.

@@ -6,10 +6,9 @@ import {
 import { bloquearSemestre, comTransacao, executorPadrao, type Executor, type ExecutorTransacional } from "../db/connection.ts";
 import { lerHorarioOpcional, lerId, lerStatusOpcional } from "../entrada.ts";
 import { ErroNaoEncontrado, ErroRequisicao } from "../erros.ts";
-import { diagnosticarViolacoes, verificarCapacidade, verificarRequisitoLab, type Violacao } from "../shared/validador.ts";
+import { diagnosticarViolacoes, ordenarSalasSoftConstraint, verificarCapacidade, verificarRequisitoLab, type Violacao } from "../shared/validador.ts";
 import { mesmaTurma, numeroAlunos } from "../shared/tipos.ts";
 import type { Alocacao, Sala, StatusAlocacao, Turma } from "../shared/tipos.ts";
-import { ordenarSalasSoftConstraint } from "./state-space-search.ts";
 
 export interface RequisicaoValidacao {
     turmaId: unknown;
@@ -175,35 +174,61 @@ export class RemanejamentoService {
             const porTurma = new Map<number, (typeof lidos)[number]>();
             for (const l of lidos) porTurma.set(l.mov.turmaId, l);
 
+            const atuaisPorTurma = new Map(base.map((a) => [a.turma.id, a]));
             interface Plano { l: (typeof lidos)[number]; turma: Turma; sala: Sala | null; horario: string; origemSala?: OrigemSala; violacoes: Violacao[] }
-            let candidatos: Plano[] = [...porTurma.values()].map((l) => ({ l, turma: turmas.get(l.mov.turmaId)!, sala: null, horario: "", violacoes: [] }));
+            let candidatos: Plano[] = [];
             const recusados = new Map<number, Plano>();
+
+            for (const l of porTurma.values()) {
+                const turma = turmas.get(l.mov.turmaId)!;
+                const existente = atuaisPorTurma.get(turma.id);
+                if (l.remover && existente?.status === "EXTERNA_FIXA") {
+                    recusados.set(l.indice, {
+                        l,
+                        turma,
+                        sala: existente.sala,
+                        horario: existente.horarioCodigo,
+                        violacoes: [{ regra: "EXTERNA_FIXA", mensagem: "Reservas externas fixas (EXTERNA_FIXA) não podem ser removidas da grade." }],
+                    });
+                    continue;
+                }
+                candidatos.push({ l, turma, sala: null, horario: "", violacoes: [] });
+            }
 
             const estadoCom = (planos: readonly Plano[], exceto?: Plano): Alocacao[] => {
                 const movidas = new Set(planos.map((p) => p.turma.id));
                 const resto = base.filter((a) => !movidas.has(a.turma.id));
-                const atuais = new Map(base.map((a) => [a.turma.id, a]));
                 for (const p of planos) {
-                    if (p === exceto || p.l.remover || !p.sala) continue;
-                    const atual = atuais.get(p.turma.id);
+                    if (p === exceto || p.l.remover || !p.sala || p.violacoes.length > 0) continue;
+                    const atual = atuaisPorTurma.get(p.turma.id);
                     resto.push({ id: atual?.id ?? null, turma: p.turma, sala: p.sala, horarioCodigo: p.horario, status: atual?.status ?? "RASCUNHO" });
                 }
                 return resto;
             };
 
-            for (let rodada = 0; rodada <= candidatos.length; rodada++) {
-                // 1. Sala e horário de cada movimento, vendo os outros já aplicados
+            const maxRodadas = candidatos.length + 1;
+            for (let rodada = 0; rodada < maxRodadas && candidatos.length > 0; rodada++) {
                 for (const p of candidatos) {
-                    if (p.l.remover) continue;
+                    p.sala = null;
+                    p.horario = "";
+                    p.origemSala = undefined;
+                    p.violacoes = [];
+                }
+                // 1. Sala e horário de cada movimento, vendo os outros já aplicados (sala explícita antes da automática)
+                const ordemResolucao = [
+                    ...candidatos.filter((p) => !p.l.remover && p.l.mov.salaId != null),
+                    ...candidatos.filter((p) => !p.l.remover && p.l.mov.salaId == null),
+                ];
+                for (const p of ordemResolucao) {
                     const outros = estadoCom(candidatos, p);
-                    const atual = base.find((a) => mesmaTurma(a.turma, p.turma));
+                    const atual = atuaisPorTurma.get(p.turma.id);
                     const r = await this.#resolver(p.turma, p.l.mov, atual ? [...outros, atual] : outros, db);
                     Object.assign(p, { sala: r.sala, horario: r.horario, origemSala: r.origemSala ?? undefined, violacoes: r.valida ? [] : r.violacoes });
                 }
-                // 2. Cada um contra o estado final com todos aplicados
+                // 2. Cada movimento válido no passo 1 contra o estado final com todos os aceitos aplicados
                 const final = estadoCom(candidatos);
                 for (const p of candidatos) {
-                    if (p.l.remover || !p.sala) continue;
+                    if (p.l.remover || !p.sala || p.violacoes.length > 0) continue;
                     const v = diagnosticarViolacoes(p.turma, p.sala, final, p.horario);
                     if (v.length > 0) p.violacoes = v;
                 }
@@ -215,14 +240,13 @@ export class RemanejamentoService {
 
             // 3. Grava só os aceitos
             const resultados = new Map<number, ResultadoItemLote>();
-            const atuaisPorTurma = new Map(base.map((a) => [a.turma.id, a]));
             for (const p of candidatos) {
                 const turmaId = p.turma.id ?? null;
+                const existente = atuaisPorTurma.get(p.turma.id);
                 if (p.l.remover) {
-                    resultados.set(p.l.indice, { ...await this.#remover(p.turma, db), indice: p.l.indice, turmaId });
+                    resultados.set(p.l.indice, { ...await this.#remover(p.turma, db, existente), indice: p.l.indice, turmaId });
                     continue;
                 }
-                const existente = atuaisPorTurma.get(p.turma.id);
                 const status: StatusAlocacao = p.l.status ?? (existente?.status === "EXTERNA_FIXA" ? "EXTERNA_FIXA" : "DEFINITIVA");
                 let alocacao: Alocacao;
                 if (existente && existente.id != null) {
@@ -242,10 +266,20 @@ export class RemanejamentoService {
                     turmaId: p.turma.id ?? null,
                 });
             }
-            // Movimentos repetidos da mesma turma: só o último vale
+            // Movimentos repetidos da mesma turma: só o último vale e herda o resultado dele
             for (const l of lidos) {
                 if (!resultados.has(l.indice)) {
-                    resultados.set(l.indice, { sucesso: true, mensagem: "Substituído por um movimento posterior da mesma turma.", indice: l.indice, turmaId: l.mov.turmaId });
+                    const finalDaTurma = porTurma.get(l.mov.turmaId)!;
+                    const resFinal = resultados.get(finalDaTurma.indice);
+                    const sucesso = resFinal?.sucesso ?? false;
+                    resultados.set(l.indice, {
+                        sucesso,
+                        mensagem: sucesso
+                            ? "Substituído por um movimento posterior da mesma turma."
+                            : "Substituído por um movimento posterior da mesma turma, que foi recusado.",
+                        indice: l.indice,
+                        turmaId: l.mov.turmaId,
+                    });
                 }
             }
 
@@ -287,7 +321,14 @@ export class RemanejamentoService {
         return { sucesso: true, mensagem: "Alocação confirmada e salva com sucesso.", alocacao: salva, origemSala };
     }
 
-    async #remover(turma: Turma, db: Executor): Promise<ResultadoConfirmacao> {
+    async #remover(turma: Turma, db: Executor, existente?: Alocacao): Promise<ResultadoConfirmacao> {
+        if (existente?.status === "EXTERNA_FIXA") {
+            return {
+                sucesso: false,
+                mensagem: "Remanejamento recusado pelo servidor: uma ou mais regras de negócio foram violadas.",
+                violacoes: [{ regra: "EXTERNA_FIXA", mensagem: "Reservas externas fixas (EXTERNA_FIXA) não podem ser removidas da grade." }],
+            };
+        }
         const removidas = await this.#alocacaoRepo.removerPorTurmaId(turma.id!, db);
         return removidas > 0
             ? { sucesso: true, mensagem: "Turma retirada da grade; agora está pendente." }

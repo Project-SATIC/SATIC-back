@@ -65,7 +65,7 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         socket = new PGLiteSocketServer({ db: pglite, port: porta, host: "127.0.0.1" });
         await socket.start();
 
-        delete process.env.DATABASE_URL;
+        process.env.DATABASE_URL = "";
         Object.assign(process.env, {
             PGHOST: "127.0.0.1", PGPORT: String(porta), PGUSER: "postgres", PGPASSWORD: "postgres",
             PGDATABASE: "postgres", PGPOOL_MAX: "1",
@@ -307,11 +307,13 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         const t = await idTurma("COMP382", "01");
         assert.equal((await (await fetch(`${api}/api/turmas/${t}`)).json()).professores.length, 4);
         assert.equal((await fetch(`${api}/api/turmas/999999`)).status, 404);
+        assert.equal((await fetch(`${api}/api/turmas/999999999999`)).status, 400);
         assert.equal((await fetch(`${api}/api/salas/999999`)).status, 404);
         assert.equal((await fetch(`${api}/api/professores/2024389`)).status, 200);
         assert.equal((await fetch(`${api}/api/disciplinas/comp382`)).status, 200);
         const turmasExternas = await (await fetch(`${api}/api/turmas?semestre=2026.2&requer_ic=false`)).json();
         assert.ok(turmasExternas.length >= 2);
+        assert.equal(process.env.DATABASE_URL, "", "DATABASE_URL vazia impede dotenv de reinjetar .env sobre o PGlite");
     });
 
     test("migration 002 sobre banco com alocações duplicadas mantém só a mais recente", async () => {
