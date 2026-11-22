@@ -1,5 +1,6 @@
-import { getClient, query } from "../connection.ts";
+import { comTransacao, executarQuery, type QueryExecutor } from "../connection.ts";
 import type { Alocacao, Disciplina, Sala, StatusAlocacao, Turma } from "../../shared/tipos.ts";
+import { hidratarProfessoresEmTurmas } from "./hidratar-professores.ts";
 
 interface AlocacaoRow {
     a_id: number;
@@ -26,8 +27,12 @@ interface AlocacaoRow {
     d_lab: boolean;
 }
 
+function normalizarDataIso(valor: Date | string): string {
+    return valor instanceof Date ? valor.toISOString() : String(valor);
+}
+
 export class AlocacaoRepository {
-    async inserir(alocacao: Alocacao): Promise<Alocacao> {
+    async inserir(alocacao: Alocacao, executor?: QueryExecutor): Promise<Alocacao> {
         if (!alocacao.turma.id) throw new Error("Turma deve possuir id para ser alocada");
         if (!alocacao.sala.id) throw new Error("Sala deve possuir id para ser alocada");
 
@@ -36,47 +41,89 @@ export class AlocacaoRepository {
             VALUES ($1, $2, $3, $4)
             RETURNING id, data_geracao;
         `;
-        const res = await query<{ id: number; data_geracao: Date }>(sql, [
-            alocacao.turma.id,
-            alocacao.sala.id,
-            alocacao.horarioCodigo,
-            alocacao.status || "RASCUNHO",
-        ]);
+        const res = await executarQuery<{ id: number; data_geracao: Date | string }>(
+            sql,
+            [alocacao.turma.id, alocacao.sala.id, alocacao.horarioCodigo, alocacao.status || "RASCUNHO"],
+            executor
+        );
 
-        alocacao.id = res.rows[0].id;
-        alocacao.dataGeracao = res.rows[0].data_geracao.toISOString();
+        alocacao.id = Number(res.rows[0].id);
+        alocacao.dataGeracao = normalizarDataIso(res.rows[0].data_geracao);
         return alocacao;
     }
 
-    async inserirMuitas(alocacoes: readonly Alocacao[]): Promise<void> {
-        const client = await getClient();
-        try {
-            await client.query("BEGIN;");
+    async inserirMuitas(alocacoes: readonly Alocacao[], executor?: QueryExecutor): Promise<void> {
+        const executar = async (tx: QueryExecutor): Promise<void> => {
             const sql = `
                 INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
                 VALUES ($1, $2, $3, $4)
-                RETURNING id;
+                RETURNING id, data_geracao;
             `;
             for (const aloc of alocacoes) {
                 if (!aloc.turma.id || !aloc.sala.id) continue;
-                const res = await client.query<{ id: number }>(sql, [
-                    aloc.turma.id,
-                    aloc.sala.id,
-                    aloc.horarioCodigo,
-                    aloc.status || "RASCUNHO",
-                ]);
-                aloc.id = res.rows[0].id;
+                const res = await executarQuery<{ id: number; data_geracao: Date | string }>(
+                    sql,
+                    [aloc.turma.id, aloc.sala.id, aloc.horarioCodigo, aloc.status || "RASCUNHO"],
+                    tx
+                );
+                aloc.id = Number(res.rows[0].id);
+                aloc.dataGeracao = normalizarDataIso(res.rows[0].data_geracao);
             }
-            await client.query("COMMIT;");
-        } catch (err) {
-            await client.query("ROLLBACK;");
-            throw err;
-        } finally {
-            client.release();
+        };
+
+        if (executor) {
+            await executar(executor);
+            return;
         }
+        await comTransacao((client) => executar(client));
     }
 
-    async listarTodas(): Promise<Alocacao[]> {
+    async upsertExternaFixa(alocacao: Alocacao, executor?: QueryExecutor): Promise<Alocacao> {
+        if (!alocacao.turma.id) throw new Error("Turma deve possuir id para reserva externa fixa");
+        if (!alocacao.sala.id) throw new Error("Sala deve possuir id para reserva externa fixa");
+
+        const executar = async (tx: QueryExecutor): Promise<Alocacao> => {
+            const existente = await executarQuery<{ id: number; data_geracao: Date | string }>(
+                `
+                    SELECT id, data_geracao
+                    FROM alocacao
+                    WHERE id_turma = $1 AND status = 'EXTERNA_FIXA'
+                    ORDER BY id ASC
+                    LIMIT 1;
+                `,
+                [alocacao.turma.id],
+                tx
+            );
+
+            if (existente.rows.length > 0) {
+                const idExistente = Number(existente.rows[0].id);
+                await executarQuery(
+                    `
+                        UPDATE alocacao
+                        SET id_sala = $1,
+                            horario_codigo = $2,
+                            status = 'EXTERNA_FIXA'
+                        WHERE id = $3;
+                    `,
+                    [alocacao.sala.id, alocacao.horarioCodigo, idExistente],
+                    tx
+                );
+                alocacao.id = idExistente;
+                alocacao.status = "EXTERNA_FIXA";
+                alocacao.dataGeracao = normalizarDataIso(existente.rows[0].data_geracao);
+                return alocacao;
+            }
+
+            return this.inserir({ ...alocacao, status: "EXTERNA_FIXA" }, tx);
+        };
+
+        if (executor) {
+            return executar(executor);
+        }
+        return comTransacao((client) => executar(client));
+    }
+
+    async listarTodas(executor?: QueryExecutor): Promise<Alocacao[]> {
         const sql = `
             SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
                    s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
@@ -92,11 +139,11 @@ export class AlocacaoRepository {
             JOIN disciplina d ON t.id_disciplina = d.codigo
             ORDER BY a.horario_codigo ASC, s.nome ASC;
         `;
-        const res = await query<AlocacaoRow>(sql);
-        return this.mapearAlocacoes(res.rows);
+        const res = await executarQuery<AlocacaoRow>(sql, undefined, executor);
+        return this.mapearAlocacoes(res.rows, executor);
     }
 
-    async listarPorSemestre(semestre: string): Promise<Alocacao[]> {
+    async listarPorSemestre(semestre: string, executor?: QueryExecutor): Promise<Alocacao[]> {
         const sql = `
             SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
                    s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
@@ -113,11 +160,11 @@ export class AlocacaoRepository {
             WHERE t.semestre = $1
             ORDER BY a.horario_codigo ASC, s.nome ASC;
         `;
-        const res = await query<AlocacaoRow>(sql, [semestre]);
-        return this.mapearAlocacoes(res.rows);
+        const res = await executarQuery<AlocacaoRow>(sql, [semestre], executor);
+        return this.mapearAlocacoes(res.rows, executor);
     }
 
-    async buscarPorTurmaId(turmaId: number): Promise<Alocacao | null> {
+    async buscarPorTurmaId(turmaId: number, executor?: QueryExecutor): Promise<Alocacao | null> {
         const sql = `
             SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
                    s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
@@ -135,16 +182,18 @@ export class AlocacaoRepository {
             ORDER BY a.id DESC
             LIMIT 1;
         `;
-        const res = await query<AlocacaoRow>(sql, [turmaId]);
+        const res = await executarQuery<AlocacaoRow>(sql, [turmaId], executor);
         if (res.rows.length === 0) return null;
-        return this.mapearAlocacoes(res.rows)[0] || null;
+        const alocacoes = await this.mapearAlocacoes(res.rows, executor);
+        return alocacoes[0] || null;
     }
 
     async atualizarSalaEHorario(
         alocacaoId: number,
         novaSalaId: number,
         novoHorario: string,
-        novoStatus?: StatusAlocacao
+        novoStatus?: StatusAlocacao,
+        executor?: QueryExecutor
     ): Promise<boolean> {
         const sql = `
             UPDATE alocacao
@@ -153,23 +202,60 @@ export class AlocacaoRepository {
                 status = COALESCE($3, status)
             WHERE id = $4;
         `;
-        const res = await query(sql, [novaSalaId, novoHorario, novoStatus || null, alocacaoId]);
+        const res = await executarQuery(sql, [novaSalaId, novoHorario, novoStatus || null, alocacaoId], executor);
         return (res.rowCount ?? 0) > 0;
     }
 
-    async limparPorSemestre(semestre: string): Promise<number> {
-        const sql = `
-            DELETE FROM alocacao
-            WHERE id_turma IN (SELECT id FROM turma WHERE semestre = $1);
-        `;
-        const res = await query(sql, [semestre]);
+    async limparPorSemestre(
+        semestre: string,
+        incluirExternasFixas = false,
+        executor?: QueryExecutor
+    ): Promise<number> {
+        const sql = incluirExternasFixas
+            ? `
+                DELETE FROM alocacao
+                WHERE id_turma IN (SELECT id FROM turma WHERE semestre = $1);
+            `
+            : `
+                DELETE FROM alocacao
+                WHERE status <> 'EXTERNA_FIXA'
+                  AND id_turma IN (SELECT id FROM turma WHERE semestre = $1);
+            `;
+        const res = await executarQuery(sql, [semestre], executor);
         return res.rowCount ?? 0;
     }
 
-    private mapearAlocacoes(rows: AlocacaoRow[]): Alocacao[] {
+    async substituirPorSemestre(
+        semestre: string,
+        alocacoes: readonly Alocacao[],
+        executor?: QueryExecutor
+    ): Promise<void> {
+        const executar = async (tx: QueryExecutor): Promise<void> => {
+            await executarQuery(
+                "SELECT pg_advisory_xact_lock(hashtext($1));",
+                [`satic:alocacao:${semestre}`],
+                tx
+            );
+            await this.limparPorSemestre(semestre, false, tx);
+            const novas = alocacoes.filter((a) => a.status !== "EXTERNA_FIXA");
+            if (novas.length > 0) {
+                await this.inserirMuitas(novas, tx);
+            }
+        };
+
+        if (executor) {
+            await executar(executor);
+            return;
+        }
+        await comTransacao((client) => executar(client));
+    }
+
+    private async mapearAlocacoes(rows: AlocacaoRow[], executor?: QueryExecutor): Promise<Alocacao[]> {
+        if (rows.length === 0) return [];
+
         const cacheTurmas = new Map<number, Turma>();
 
-        return rows.map((r) => {
+        const alocacoes = rows.map((r) => {
             const sala: Sala = {
                 id: Number(r.s_id),
                 nome: r.s_nome,
@@ -179,7 +265,8 @@ export class AlocacaoRepository {
                 alocavelIc: Boolean(r.s_alocavel),
             };
 
-            let turma = cacheTurmas.get(r.t_id);
+            const turmaId = Number(r.t_id);
+            let turma = cacheTurmas.get(turmaId);
             if (!turma) {
                 const disc: Disciplina = {
                     codigo: r.d_codigo,
@@ -189,7 +276,7 @@ export class AlocacaoRepository {
                 };
 
                 turma = {
-                    id: Number(r.t_id),
+                    id: turmaId,
                     disciplina: disc,
                     codigoTurma: r.t_codigo,
                     semestre: r.t_semestre,
@@ -201,7 +288,7 @@ export class AlocacaoRepository {
                     professores: [],
                     cargaHorariaPorDocente: {},
                 };
-                cacheTurmas.set(r.t_id, turma);
+                cacheTurmas.set(turmaId, turma);
             }
 
             return {
@@ -210,8 +297,11 @@ export class AlocacaoRepository {
                 sala,
                 horarioCodigo: r.a_horario,
                 status: r.a_status as StatusAlocacao,
-                dataGeracao: r.a_data instanceof Date ? r.a_data.toISOString() : String(r.a_data),
+                dataGeracao: normalizarDataIso(r.a_data),
             };
         });
+
+        await hidratarProfessoresEmTurmas(Array.from(cacheTurmas.values()), executor);
+        return alocacoes;
     }
 }

@@ -88,13 +88,9 @@ export class AlocadorService {
         });
         const resultado = search.solve();
 
-        // 5. Persiste as alocações geradas no PostgreSQL se solicitado
+        // 5. Persiste as alocações geradas no PostgreSQL de forma atômica, preservando EXTERNA_FIXA
         if (persistir) {
-            // Remove alocações que não sejam EXTERNA_FIXA
-            await this.#alocacaoRepo.limparPorSemestre(semestre);
-            if (resultado.alocacoes.length > 0) {
-                await this.#alocacaoRepo.inserirMuitas(resultado.alocacoes);
-            }
+            await this.#alocacaoRepo.substituirPorSemestre(semestre, resultado.alocacoes);
         }
 
         return {

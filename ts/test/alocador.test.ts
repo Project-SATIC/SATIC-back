@@ -2,12 +2,14 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { AlocadorService } from "../src/motor/alocador.service.ts";
 import { carregarBase2026_2 } from "../src/seed/seeder.ts";
-import type { Alocacao, Sala, Turma } from "../src/shared/tipos.ts";
+import { montarProblema } from "../src/motor/montar-problema.ts";
+import type { Alocacao } from "../src/shared/tipos.ts";
 
 describe("AlocadorService - Integração do Motor de Busca com Repositórios", () => {
-    test("gerarAlocacao aloca base 2026.2 e retorna resumo completo", async () => {
+    test("gerarAlocacao aloca base 2026.2 e persiste de forma atômica preservando EXTERNA_FIXA", async () => {
         const base = carregarBase2026_2();
-        let limpou = false;
+        const problema = montarProblema(base);
+        let semestreSubstituido = "";
         let alocacoesSalvas: Alocacao[] = [];
 
         // Mock dos repositórios injetados no service
@@ -16,16 +18,13 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
         const mockSalaRepo = {
-            listarAlocaveisPeloIc: async () => base.salas.filter((s) => s.alocavelIc),
+            listarAlocaveisPeloIc: async () => problema.salasAlocaveis,
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
         const mockAlocacaoRepo = {
-            listarPorSemestre: async () => [],
-            limparPorSemestre: async () => {
-                limpou = true;
-                return 0;
-            },
-            inserirMuitas: async (alocs: readonly Alocacao[]) => {
+            listarPorSemestre: async () => problema.reservasFixasExternas,
+            substituirPorSemestre: async (semestre: string, alocs: readonly Alocacao[]) => {
+                semestreSubstituido = semestre;
                 alocacoesSalvas = [...alocs];
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -39,13 +38,17 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
         assert.equal(resultado.resumo.completo, true);
         assert.equal(resultado.resumo.alocadas, 86);
         assert.equal(resultado.resumo.pendentes, 0);
-        assert.ok(limpou, "Deve limpar alocações anteriores ao persistir");
-        assert.equal(alocacoesSalvas.length, 86, "Deve persistir as 86 alocações geradas");
+        assert.equal(semestreSubstituido, "2026.2");
+        assert.equal(alocacoesSalvas.length, 86, "Deve persistir atomicamente as 86 alocações geradas");
+        assert.ok(
+            alocacoesSalvas.every((a) => a.status !== "EXTERNA_FIXA"),
+            "Reservas EXTERNA_FIXA são preservadas no banco sem serem duplicadas"
+        );
     });
 
     test("gerarAlocacao respeita persistir = false (modo preview)", async () => {
         const base = carregarBase2026_2();
-        let limpou = false;
+        let substituiu = false;
 
         const mockTurmaRepo = {
             listarPorSemestre: async () => base.turmas,
@@ -57,12 +60,9 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
 
         const mockAlocacaoRepo = {
             listarPorSemestre: async () => [],
-            limparPorSemestre: async () => {
-                limpou = true;
-                return 0;
-            },
-            inserirMuitas: async () => {
-                assert.fail("Não deve chamar inserirMuitas quando persistir = false");
+            substituirPorSemestre: async () => {
+                substituiu = true;
+                assert.fail("Não deve chamar substituirPorSemestre quando persistir = false");
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -71,7 +71,7 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
 
         assert.equal(resultado.persistido, false);
         assert.equal(resultado.resumo.alocadas, 86);
-        assert.equal(limpou, false);
+        assert.equal(substituiu, false);
     });
 
     test("gerarAlocacao falha com erro amigável se semestre não possui turmas", async () => {

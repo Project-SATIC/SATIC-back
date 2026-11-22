@@ -1,4 +1,4 @@
-import { query } from "../connection.ts";
+import { comTransacao, executarQuery, type QueryExecutor } from "../connection.ts";
 import type { IndisponibilidadeDocente, Professor } from "../../shared/tipos.ts";
 
 interface ProfessorRow {
@@ -43,61 +43,89 @@ export function formatarHorarioIndisponivel(ind: IndisponibilidadeDocente): stri
 }
 
 export class ProfessorRepository {
-    async inserir(professor: Professor): Promise<Professor> {
-        const sqlProf = `
-            INSERT INTO professor (matricula_siape, nome)
-            VALUES ($1, $2)
-            ON CONFLICT (matricula_siape) DO UPDATE
-            SET nome = EXCLUDED.nome
-            RETURNING matricula_siape, nome;
-        `;
-        const res = await query<ProfessorRow>(sqlProf, [professor.matriculaSiape, professor.nome]);
+    async inserir(professor: Professor, executor?: QueryExecutor): Promise<Professor> {
+        const executar = async (tx: QueryExecutor): Promise<Professor> => {
+            const sqlProf = `
+                INSERT INTO professor (matricula_siape, nome)
+                VALUES ($1, $2)
+                ON CONFLICT (matricula_siape) DO UPDATE
+                SET nome = EXCLUDED.nome
+                RETURNING matricula_siape, nome;
+            `;
+            const res = await executarQuery<ProfessorRow>(
+                sqlProf,
+                [professor.matriculaSiape, professor.nome],
+                tx
+            );
 
-        if (professor.indisponibilidades && professor.indisponibilidades.length > 0) {
-            for (const ind of professor.indisponibilidades) {
-                const codigoHorario = formatarHorarioIndisponivel(ind);
-                await this.adicionarRestricao(professor.matriculaSiape, codigoHorario);
+            if (professor.indisponibilidades && professor.indisponibilidades.length > 0) {
+                for (const ind of professor.indisponibilidades) {
+                    const codigoHorario = formatarHorarioIndisponivel(ind);
+                    await this.adicionarRestricao(professor.matriculaSiape, codigoHorario, tx);
+                }
             }
-        }
 
-        return {
-            matriculaSiape: res.rows[0].matricula_siape,
-            nome: res.rows[0].nome,
-            indisponibilidades: professor.indisponibilidades || [],
+            return {
+                matriculaSiape: res.rows[0].matricula_siape,
+                nome: res.rows[0].nome,
+                indisponibilidades: professor.indisponibilidades || [],
+            };
         };
-    }
 
-    async inserirMuitos(professores: readonly Professor[]): Promise<void> {
-        for (const prof of professores) {
-            await this.inserir(prof);
+        if (executor) {
+            return executar(executor);
         }
+        return comTransacao((client) => executar(client));
     }
 
-    async adicionarRestricao(matriculaSiape: string, horarioIndisponivel: string): Promise<void> {
+    async inserirMuitos(professores: readonly Professor[], executor?: QueryExecutor): Promise<void> {
+        const executar = async (tx: QueryExecutor): Promise<void> => {
+            for (const prof of professores) {
+                await this.inserir(prof, tx);
+            }
+        };
+
+        if (executor) {
+            await executar(executor);
+            return;
+        }
+        await comTransacao((client) => executar(client));
+    }
+
+    async adicionarRestricao(
+        matriculaSiape: string,
+        horarioIndisponivel: string,
+        executor?: QueryExecutor
+    ): Promise<void> {
         const sql = `
             INSERT INTO restricoes_horario (matricula_siape, horario_indisponivel)
             VALUES ($1, $2)
             ON CONFLICT (matricula_siape, horario_indisponivel) DO NOTHING;
         `;
-        await query(sql, [matriculaSiape, horarioIndisponivel]);
+        await executarQuery(sql, [matriculaSiape, horarioIndisponivel], executor);
     }
 
-    async listarRestricoesPorProfessor(matriculaSiape: string): Promise<IndisponibilidadeDocente[]> {
-        const res = await query<RestricaoRow>(
+    async listarRestricoesPorProfessor(
+        matriculaSiape: string,
+        executor?: QueryExecutor
+    ): Promise<IndisponibilidadeDocente[]> {
+        const res = await executarQuery<RestricaoRow>(
             "SELECT matricula_siape, horario_indisponivel FROM restricoes_horario WHERE matricula_siape = $1;",
-            [matriculaSiape]
+            [matriculaSiape],
+            executor
         );
         return res.rows.map((r) => parseHorarioIndisponivel(r.matricula_siape, r.horario_indisponivel));
     }
 
-    async buscarPorSiape(matriculaSiape: string): Promise<Professor | null> {
-        const res = await query<ProfessorRow>(
+    async buscarPorSiape(matriculaSiape: string, executor?: QueryExecutor): Promise<Professor | null> {
+        const res = await executarQuery<ProfessorRow>(
             "SELECT matricula_siape, nome FROM professor WHERE matricula_siape = $1;",
-            [matriculaSiape]
+            [matriculaSiape],
+            executor
         );
         if (res.rows.length === 0) return null;
 
-        const indisps = await this.listarRestricoesPorProfessor(matriculaSiape);
+        const indisps = await this.listarRestricoesPorProfessor(matriculaSiape, executor);
         return {
             matriculaSiape: res.rows[0].matricula_siape,
             nome: res.rows[0].nome,
@@ -105,9 +133,17 @@ export class ProfessorRepository {
         };
     }
 
-    async listarTodos(): Promise<Professor[]> {
-        const resProf = await query<ProfessorRow>("SELECT matricula_siape, nome FROM professor ORDER BY nome ASC;");
-        const resRestricoes = await query<RestricaoRow>("SELECT matricula_siape, horario_indisponivel FROM restricoes_horario;");
+    async listarTodos(executor?: QueryExecutor): Promise<Professor[]> {
+        const resProf = await executarQuery<ProfessorRow>(
+            "SELECT matricula_siape, nome FROM professor ORDER BY nome ASC;",
+            undefined,
+            executor
+        );
+        const resRestricoes = await executarQuery<RestricaoRow>(
+            "SELECT matricula_siape, horario_indisponivel FROM restricoes_horario;",
+            undefined,
+            executor
+        );
 
         const restricoesPorProf = new Map<string, IndisponibilidadeDocente[]>();
         for (const r of resRestricoes.rows) {

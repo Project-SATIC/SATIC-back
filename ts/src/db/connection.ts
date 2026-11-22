@@ -34,6 +34,13 @@ export function getPool(): pg.Pool {
     return pool;
 }
 
+export interface QueryExecutor {
+    query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+        text: string,
+        params?: unknown[]
+    ): Promise<pg.QueryResult<R>>;
+}
+
 export async function query<R extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
     params?: unknown[]
@@ -42,9 +49,35 @@ export async function query<R extends pg.QueryResultRow = pg.QueryResultRow>(
     return currentPool.query<R>(text, params);
 }
 
+export async function executarQuery<R extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    params?: unknown[],
+    executor?: QueryExecutor
+): Promise<pg.QueryResult<R>> {
+    if (executor) {
+        return executor.query<R>(text, params);
+    }
+    return query<R>(text, params);
+}
+
 export async function getClient(): Promise<pg.PoolClient> {
     const currentPool = getPool();
     return currentPool.connect();
+}
+
+export async function comTransacao<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    const client = await getClient();
+    try {
+        await client.query("BEGIN;");
+        const resultado = await fn(client);
+        await client.query("COMMIT;");
+        return resultado;
+    } catch (err) {
+        await client.query("ROLLBACK;");
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 export async function testConnection(): Promise<{ ok: boolean; message?: string }> {

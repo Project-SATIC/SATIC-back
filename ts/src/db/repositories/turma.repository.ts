@@ -1,6 +1,6 @@
-import { getClient, query } from "../connection.ts";
-import type { Disciplina, Professor, Turma } from "../../shared/tipos.ts";
-import { parseHorarioIndisponivel } from "./professor.repository.ts";
+import { comTransacao, executarQuery, type QueryExecutor } from "../connection.ts";
+import type { Disciplina, Turma } from "../../shared/tipos.ts";
+import { hidratarProfessoresEmTurmas } from "./hidratar-professores.ts";
 
 interface TurmaRow {
     t_id: number;
@@ -17,20 +17,9 @@ interface TurmaRow {
     d_lab: boolean;
 }
 
-interface ProfessorTurmaRow {
-    id_turma: number;
-    matricula_siape: string;
-    nome_docente: string;
-    carga_horaria_professor: number;
-    horario_indisponivel: string | null;
-}
-
 export class TurmaRepository {
-    async inserir(turma: Turma): Promise<Turma> {
-        const client = await getClient();
-        try {
-            await client.query("BEGIN;");
-
+    async inserir(turma: Turma, executor?: QueryExecutor): Promise<Turma> {
+        const executar = async (tx: QueryExecutor): Promise<Turma> => {
             const sqlTurma = `
                 INSERT INTO turma (
                     id_disciplina, codigo_turma, semestre, cursos_ofertados,
@@ -45,22 +34,26 @@ export class TurmaRepository {
                 RETURNING id;
             `;
 
-            const res = await client.query<{ id: number }>(sqlTurma, [
-                turma.disciplina.codigo,
-                turma.codigoTurma,
-                turma.semestre,
-                turma.cursosOfertados,
-                turma.vagas,
-                turma.matriculados,
-                turma.requerAlocacaoIc,
-                turma.horarioSigaa,
-            ]);
+            const res = await executarQuery<{ id: number }>(
+                sqlTurma,
+                [
+                    turma.disciplina.codigo,
+                    turma.codigoTurma,
+                    turma.semestre,
+                    turma.cursosOfertados,
+                    turma.vagas,
+                    turma.matriculados,
+                    turma.requerAlocacaoIc,
+                    turma.horarioSigaa,
+                ],
+                tx
+            );
 
-            const turmaId = res.rows[0].id;
+            const turmaId = Number(res.rows[0].id);
             turma.id = turmaId;
 
             // Atualiza vínculos com professores
-            await client.query("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId]);
+            await executarQuery("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId], tx);
 
             const sqlVinculo = `
                 INSERT INTO professor_turma (matricula_siape, id_turma, carga_horaria_professor)
@@ -71,26 +64,33 @@ export class TurmaRepository {
 
             for (const prof of turma.professores) {
                 const carga = turma.cargaHorariaPorDocente?.[prof.matriculaSiape] ?? turma.disciplina.cargaHoraria;
-                await client.query(sqlVinculo, [prof.matriculaSiape, turmaId, carga]);
+                await executarQuery(sqlVinculo, [prof.matriculaSiape, turmaId, carga], tx);
             }
 
-            await client.query("COMMIT;");
             return turma;
-        } catch (err) {
-            await client.query("ROLLBACK;");
-            throw err;
-        } finally {
-            client.release();
+        };
+
+        if (executor) {
+            return executar(executor);
         }
+        return comTransacao((client) => executar(client));
     }
 
-    async inserirMuitas(turmas: readonly Turma[]): Promise<void> {
-        for (const turma of turmas) {
-            await this.inserir(turma);
+    async inserirMuitas(turmas: readonly Turma[], executor?: QueryExecutor): Promise<void> {
+        const executar = async (tx: QueryExecutor): Promise<void> => {
+            for (const turma of turmas) {
+                await this.inserir(turma, tx);
+            }
+        };
+
+        if (executor) {
+            await executar(executor);
+            return;
         }
+        await comTransacao((client) => executar(client));
     }
 
-    async buscarPorId(id: number): Promise<Turma | null> {
+    async buscarPorId(id: number, executor?: QueryExecutor): Promise<Turma | null> {
         const sql = `
             SELECT t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
                    t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
@@ -101,14 +101,14 @@ export class TurmaRepository {
             JOIN disciplina d ON t.id_disciplina = d.codigo
             WHERE t.id = $1;
         `;
-        const res = await query<TurmaRow>(sql, [id]);
+        const res = await executarQuery<TurmaRow>(sql, [id], executor);
         if (res.rows.length === 0) return null;
 
-        const turmas = await this.hidratarProfessores(res.rows);
+        const turmas = await this.mapearEHidratar(res.rows, executor);
         return turmas[0] || null;
     }
 
-    async listarPorSemestre(semestre: string): Promise<Turma[]> {
+    async listarPorSemestre(semestre: string, executor?: QueryExecutor): Promise<Turma[]> {
         const sql = `
             SELECT t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
                    t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
@@ -120,11 +120,11 @@ export class TurmaRepository {
             WHERE t.semestre = $1
             ORDER BY d.codigo ASC, t.codigo_turma ASC;
         `;
-        const res = await query<TurmaRow>(sql, [semestre]);
-        return this.hidratarProfessores(res.rows);
+        const res = await executarQuery<TurmaRow>(sql, [semestre], executor);
+        return this.mapearEHidratar(res.rows, executor);
     }
 
-    async listarTodas(): Promise<Turma[]> {
+    async listarTodas(executor?: QueryExecutor): Promise<Turma[]> {
         const sql = `
             SELECT t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
                    t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
@@ -135,75 +135,20 @@ export class TurmaRepository {
             JOIN disciplina d ON t.id_disciplina = d.codigo
             ORDER BY t.semestre DESC, d.codigo ASC, t.codigo_turma ASC;
         `;
-        const res = await query<TurmaRow>(sql);
-        return this.hidratarProfessores(res.rows);
+        const res = await executarQuery<TurmaRow>(sql, undefined, executor);
+        return this.mapearEHidratar(res.rows, executor);
     }
 
-    private async hidratarProfessores(turmaRows: TurmaRow[]): Promise<Turma[]> {
+    private async mapearEHidratar(turmaRows: TurmaRow[], executor?: QueryExecutor): Promise<Turma[]> {
         if (turmaRows.length === 0) return [];
 
-        const turmaIds = turmaRows.map((r) => r.t_id);
-
-        const sqlDocentes = `
-            SELECT pt.id_turma, pt.matricula_siape, pt.carga_horaria_professor,
-                   p.nome AS nome_docente,
-                   rh.horario_indisponivel
-            FROM professor_turma pt
-            JOIN professor p ON pt.matricula_siape = p.matricula_siape
-            LEFT JOIN restricoes_horario rh ON p.matricula_siape = rh.matricula_siape
-            WHERE pt.id_turma = ANY($1::int[])
-            ORDER BY p.nome ASC;
-        `;
-
-        const resDocentes = await query<ProfessorTurmaRow>(sqlDocentes, [turmaIds]);
-
-        // Agrupa por id_turma -> Map de professores e cargas
-        const profsPorTurma = new Map<number, Map<string, Professor>>();
-        const cargaPorTurma = new Map<number, Record<string, number>>();
-
-        for (const row of resDocentes.rows) {
-            let mapaProfs = profsPorTurma.get(row.id_turma);
-            if (!mapaProfs) {
-                mapaProfs = new Map();
-                profsPorTurma.set(row.id_turma, mapaProfs);
-            }
-
-            let prof = mapaProfs.get(row.matricula_siape);
-            if (!prof) {
-                prof = {
-                    matriculaSiape: row.matricula_siape,
-                    nome: row.nome_docente,
-                    indisponibilidades: [],
-                };
-                mapaProfs.set(row.matricula_siape, prof);
-            }
-
-            if (row.horario_indisponivel) {
-                const ind = parseHorarioIndisponivel(row.matricula_siape, row.horario_indisponivel);
-                if (!prof.indisponibilidades.some((i) => i.diaSemana === ind.diaSemana && i.turno === ind.turno && i.indiceHorario === ind.indiceHorario)) {
-                    prof.indisponibilidades.push(ind);
-                }
-            }
-
-            let cargas = cargaPorTurma.get(row.id_turma);
-            if (!cargas) {
-                cargas = {};
-                cargaPorTurma.set(row.id_turma, cargas);
-            }
-            cargas[row.matricula_siape] = row.carga_horaria_professor;
-        }
-
-        return turmaRows.map((r) => {
+        const turmas: Turma[] = turmaRows.map((r) => {
             const disc: Disciplina = {
                 codigo: r.d_codigo,
                 nome: r.d_nome,
                 cargaHoraria: Number(r.d_ch),
                 exigeLaboratorio: Boolean(r.d_lab),
             };
-
-            const profsMap = profsPorTurma.get(r.t_id);
-            const professores = profsMap ? Array.from(profsMap.values()) : [];
-            const cargaHorariaPorDocente = cargaPorTurma.get(r.t_id) || {};
 
             return {
                 id: Number(r.t_id),
@@ -215,9 +160,12 @@ export class TurmaRepository {
                 matriculados: Number(r.t_matriculados),
                 requerAlocacaoIc: Boolean(r.t_requer_ic),
                 horarioSigaa: r.t_horario,
-                professores,
-                cargaHorariaPorDocente,
+                professores: [],
+                cargaHorariaPorDocente: {},
             };
         });
+
+        await hidratarProfessoresEmTurmas(turmas, executor);
+        return turmas;
     }
 }

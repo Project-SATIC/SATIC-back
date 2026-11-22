@@ -153,4 +153,85 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
         assert.equal(res.alocacao?.horarioCodigo, "35T12");
         assert.equal(res.alocacao?.status, "DEFINITIVA");
     });
+
+    test("confirmar executa validação e escrita na mesma transação com advisory lock e detecta choque RN-01", async () => {
+        const outraTurmaMesmoDocente: Turma = {
+            ...turmaGrande,
+            id: 20,
+            codigoTurma: "02",
+            horarioSigaa: "35T12",
+        };
+
+        const alocacaoConflitante: Alocacao = {
+            id: 50,
+            turma: outraTurmaMesmoDocente,
+            sala: salaPequena,
+            horarioCodigo: "35T12",
+            status: "DEFINITIVA",
+        };
+
+        const chamadasTx: string[] = [];
+        const txFake = {
+            query: async (sql: string, params?: unknown[]) => {
+                chamadasTx.push(`${sql} :: ${JSON.stringify(params)}`);
+                return { rows: [], rowCount: 0 } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+            },
+        };
+
+        const executoresRecebidos: unknown[] = [];
+
+        const mockTurmaRepo = {
+            buscarPorId: async (_id: number, executor?: unknown) => {
+                executoresRecebidos.push(executor);
+                return turmaGrande;
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        const mockSalaRepo = {
+            buscarPorId: async (_id: number, executor?: unknown) => {
+                executoresRecebidos.push(executor);
+                return salaGrande;
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        let atualizou = false;
+        const mockAlocacaoRepo = {
+            listarPorSemestre: async (_semestre: string, executor?: unknown) => {
+                executoresRecebidos.push(executor);
+                return [alocacaoConflitante];
+            },
+            atualizarSalaEHorario: async () => {
+                atualizou = true;
+                return true;
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        let dentroDaTransacao = 0;
+        const service = new RemanejamentoService(
+            mockTurmaRepo,
+            mockSalaRepo,
+            mockAlocacaoRepo,
+            async (fn) => {
+                dentroDaTransacao++;
+                return fn(txFake);
+            }
+        );
+
+        const res = await service.confirmar({
+            turmaId: 10,
+            salaId: 2,
+            horario: "35T12",
+        });
+
+        assert.equal(dentroDaTransacao, 1);
+        assert.equal(res.sucesso, false);
+        assert.equal(atualizou, false);
+        assert.ok(res.violacoes?.some((v) => v.regra === "RN-01"), "Deve detectar choque docente RN-01");
+        assert.ok(
+            chamadasTx.some((c) => c.includes("pg_advisory_xact_lock") && c.includes("satic:alocacao:2026.2")),
+            "Deve adquirir advisory lock do semestre na transação"
+        );
+        assert.equal(executoresRecebidos.length, 3);
+        assert.ok(executoresRecebidos.every((e) => e === txFake), "Todas as consultas devem usar o mesmo client transacional");
+    });
 });
