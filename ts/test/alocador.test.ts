@@ -85,4 +85,58 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
             /Nenhuma turma encontrada no banco para o semestre '2099.1'/
         );
     });
+
+    test("gerarAlocacao normaliza semestre com espaços, valida opções e usa mesma transação ao persistir", async () => {
+        const base = carregarBase2026_2();
+        const problema = montarProblema(base);
+        const semestresConsultados: string[] = [];
+        const executoresRecebidos: unknown[] = [];
+
+        const txFake = {
+            query: async () => ({ rows: [], rowCount: 0 }),
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        const mockTurmaRepo = {
+            listarPorSemestre: async (s: string, ex?: unknown) => {
+                semestresConsultados.push(s);
+                executoresRecebidos.push(ex);
+                return base.turmas;
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        const mockSalaRepo = {
+            listarAlocaveisPeloIc: async (ex?: unknown) => {
+                executoresRecebidos.push(ex);
+                return problema.salasAlocaveis;
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        const mockAlocacaoRepo = {
+            listarPorSemestre: async (s: string, ex?: unknown) => {
+                semestresConsultados.push(s);
+                executoresRecebidos.push(ex);
+                return problema.reservasFixasExternas;
+            },
+            substituirPorSemestre: async (s: string, _alocs: readonly Alocacao[], ex?: unknown) => {
+                semestresConsultados.push(s);
+                executoresRecebidos.push(ex);
+            },
+        } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        const service = new AlocadorService(
+            mockTurmaRepo,
+            mockSalaRepo,
+            mockAlocacaoRepo,
+            async (fn) => fn(txFake)
+        );
+
+        await service.gerarAlocacao({ semestre: " 2026.2 ", persistir: true });
+        assert.deepEqual(semestresConsultados, ["2026.2", "2026.2", "2026.2"]);
+        assert.equal(executoresRecebidos.length, 4);
+        assert.ok(executoresRecebidos.every((e) => e === txFake));
+
+        await assert.rejects(() => service.gerarAlocacao({ semestre: "   " }), /semestre/);
+        await assert.rejects(() => service.gerarAlocacao({ semSalas: [123 as any] }), /semSalas/);
+        await assert.rejects(() => service.gerarAlocacao({ limiteNos: 0 }), /limiteNos/);
+    });
 });

@@ -1,17 +1,21 @@
-# Registro de mudança: back-end Java → TypeScript + Express
+# Registro de mudança: back-end Java → TypeScript + Express + PostgreSQL
 
-**Data:** 17/11/2026 · **Branch:** `ts-back-dev` (criada a partir de `lg-back-dev`) · **Situação:** etapa 1 de 4 concluída
+**Data inicial:** 17/11/2026 · **Atualizado em:** 22/11/2026 · **Situação:** etapas 1 a 3 concluídas (núcleo, banco PostgreSQL e API Express)
 
 ## O que mudou
 
-Criamos a pasta `ts/` com o núcleo do back-end portado para TypeScript:
+Criamos a pasta `ts/` com o back-end portado para TypeScript, banco relacional **PostgreSQL** e API **Express**:
 
 - **`ts/src/shared/`:** parser de horários do SIGAA e validador das regras RN-01 a RN-04, choque de sala e escopo IC. Será usado **pelo front e pelo back**.
-- **`ts/src/motor/`:** a busca em espaço de estados (MRV + Best-Fit + recuperação parcial).
-- **`ts/src/seed/`:** a oferta real de 2026.2.
-- **`ts/test/`:** 36 testes automatizados.
+- **`ts/src/motor/`:** busca em espaço de estados (MRV + Best-Fit + recuperação parcial), `AlocadorService` e `RemanejamentoService`.
+- **`ts/migrations/` e `ts/src/db/`:** schema PostgreSQL em 7 tabelas (migrations `001` e `002` com constraints `CHECK`, `UNIQUE(id_turma)` e auditoria `atualizado_em`), executor de migrations e 5 repositórios com CRUD completo, filtros SQL e transações.
+- **`ts/src/seed/`:** oferta real de 2026.2 em memória e seeder transacional PostgreSQL (`db-seeder.ts`) incluindo reservas `EXTERNA_FIXA`.
+- **`ts/src/api/`:** servidor Express com endpoints REST de leitura, CRUD, geração de alocações, validação e confirmação transacional de remanejamentos.
+- **`ts/test/`:** testes unitários, golden tests contra o Java e suíte de integração PostgreSQL (`npm run test:integration`).
 
-O código Java **continua intacto** nesta branch e em `lg-back-dev`.
+O código Java + SQLite (`src/`) **continua intacto** como referência histórica e de validação dos gabaritos.
+
+> **Evolução em relação ao plano inicial (SQLite → PostgreSQL):** inicialmente a etapa 2 previa SQLite em TypeScript, mas a equipe optou por **PostgreSQL 16** (via Docker `docker-compose.yml`) para suportar concorrência segura em remanejamentos (`pg_advisory_xact_lock`), constraints de domínio e facilidade de deploy compartilhado. Em relação ao legado SQLite (`src/dao/DatabaseInitializer.java`), o schema PostgreSQL usa nomes no singular (`sala`, `turma`, `alocacao`, `professor_turma`) e armazena restrições em `restricoes_horario(matricula_siape, horario_indisponivel)` no formato canônico `DIA-TURNO-HORAS` (ex.: `SEX-T-56`).
 
 ## Por que mudou
 
@@ -35,23 +39,28 @@ Rodamos o motor Java e o TypeScript em 6 cenários: a base real e casos de estre
 
 - O usuário pode arrastar **um encontro por vez** de uma turma para outro horário.
 - **Nada é gravado sem apertar Confirmar.**
-- Na confirmação, o servidor valida e escolhe a sala **só da turma movida**. As outras turmas não mudam. Se o movimento for inválido, o servidor recusa e diz qual regra foi violada.
+- Na confirmação (`POST /api/alocacoes/confirmar`), o servidor valida a sala e o horário pretendidos **só da turma movida** (protegendo reservas `EXTERNA_FIXA`). As outras turmas não mudam. Se o movimento for inválido, o servidor recusa (`409`) e diz qual regra foi violada.
 
-## Próximas etapas
+## Status das etapas
 
-1. Banco SQLite em TypeScript, com as mesmas 7 tabelas.
-2. API Express, incluindo a rota de confirmação.
-3. Ligar o front (`samyr-front-dev`) à API, no lugar dos dados de exemplo.
+1. ~~Núcleo TypeScript (parser SIGAA, validador RN-01..RN-04 e motor `StateSpaceSearch`)~~ — **Concluída**.
+2. ~~Banco PostgreSQL com as 7 tabelas, migrations (`001` e `002`), repositórios CRUD e seed `2026.2`~~ — **Concluída**.
+3. ~~API Express com consulta, CRUD, geração de alocações, validação e confirmação transacional~~ — **Concluída**.
+4. Ligar o front (`samyr-front-dev`) à API, no lugar dos dados de exemplo — **Em andamento / próxima etapa**.
 
 ## Como rodar a nova versão
 
-É preciso ter o **Node.js 22.18 ou mais recente** (confira com `node -v`). Não há pacotes para instalar. Os comandos são os mesmos no Windows, no Linux e no macOS:
+É preciso ter o **Node.js 22.18 ou mais recente** e **PostgreSQL 16+** (ou Docker). Na pasta `ts/`:
 
 ```powershell
-git checkout ts-back-dev
+docker compose up -d       # na raiz do repositório (sobe PostgreSQL 16)
 cd ts
-npm test          # 36 testes; o esperado é "pass 36" e "fail 0"
-npm run motor     # roda o motor na base 2026.2 e imprime as alocações em JSON
+npm install
+npm run migrate            # aplica migrations 001 e 002
+npm run db:seed            # popula oferta 2026.2 + reservas EXTERNA_FIXA
+npm test                   # testes unitários e de contrato
+npm run test:integration   # testes de integração reais no banco 'satic_test'
+npm start                  # inicia a API em http://localhost:3001
 ```
 
 No PowerShell do Windows, se o `npm` for bloqueado com o erro *"a execução de scripts foi desabilitada"*, use `npm.cmd test` e `npm.cmd run motor`.

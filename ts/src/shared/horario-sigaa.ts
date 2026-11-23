@@ -65,12 +65,19 @@ export function haSobreposicao(horarioA: string | null | undefined, horarioB: st
 /** Expande uma indisponibilidade docente para slots atômicos (IndisponibilidadeDocente.toSlotsAtomicos). */
 export function slotsDaIndisponibilidade(ind: IndisponibilidadeDocente): string[] {
     if (ind.diaSemana == null || ind.turno == null || ind.indiceHorario == null) return [];
-    let dia = ind.diaSemana.trim().toUpperCase();
-    if (dia.length === 1 && dia >= "0" && dia <= "9") dia = diaDoCodigoSigaa(dia);
+    const diaBruto = ind.diaSemana.trim().toUpperCase();
     const turno = ind.turno.trim().toUpperCase();
+    const dias: string[] = /^[2-7]+$/.test(diaBruto)
+        ? [...diaBruto].map((d) => diaDoCodigoSigaa(d))
+        : diaBruto.length === 1 && diaBruto >= "0" && diaBruto <= "9"
+            ? [diaDoCodigoSigaa(diaBruto)]
+            : [diaBruto];
+
     const slots: string[] = [];
-    for (const c of ind.indiceHorario.trim()) {
-        if (c >= "0" && c <= "9") slots.push(`${dia}-${turno}${c}`);
+    for (const dia of dias) {
+        for (const c of ind.indiceHorario.trim()) {
+            if (c >= "0" && c <= "9") slots.push(`${dia}-${turno}${c}`);
+        }
     }
     return slots;
 }

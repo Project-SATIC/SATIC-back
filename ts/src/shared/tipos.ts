@@ -72,6 +72,7 @@ export interface Alocacao {
     horarioCodigo: string;
     status: StatusAlocacao;
     dataGeracao?: string | null;
+    atualizadoEm?: string | null;
 }
 
 /** Demanda efetiva usada no RN-03: matriculados > 0 ? matriculados : vagas. */

@@ -93,6 +93,7 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
 
         let atualizou = false;
         const mockAlocacaoRepo = {
+            buscarPorTurmaId: async () => null,
             listarPorSemestre: async () => [],
             atualizarSalaEHorario: async () => {
                 atualizou = true;
@@ -196,6 +197,10 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
 
         let atualizou = false;
         const mockAlocacaoRepo = {
+            buscarPorTurmaId: async (_id: number, executor?: unknown) => {
+                executoresRecebidos.push(executor);
+                return null;
+            },
             listarPorSemestre: async (_semestre: string, executor?: unknown) => {
                 executoresRecebidos.push(executor);
                 return [alocacaoConflitante];
@@ -231,7 +236,87 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
             chamadasTx.some((c) => c.includes("pg_advisory_xact_lock") && c.includes("satic:alocacao:2026.2")),
             "Deve adquirir advisory lock do semestre na transação"
         );
-        assert.equal(executoresRecebidos.length, 3);
+        assert.equal(executoresRecebidos.length, 4);
         assert.ok(executoresRecebidos.every((e) => e === txFake), "Todas as consultas devem usar o mesmo client transacional");
+    });
+
+    test("validar/confirmar rejeitam horário SIGAA inválido mesmo sem docentes e em sala vazia, normalizam maiúsculas e protegem EXTERNA_FIXA", async () => {
+        const turmaSemDocente: Turma = { ...turmaGrande, professores: [], cargaHorariaPorDocente: {} };
+
+        const mockTurmaRepo = { buscarPorId: async () => turmaSemDocente } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+        const mockSalaRepo = { buscarPorId: async () => salaGrande } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        // 1. Horário inválido e tipos inválidos
+        const serviceLivre = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, {
+            buscarPorTurmaId: async () => null,
+            listarPorSemestre: async () => [],
+            inserir: async (a: Alocacao) => ({ ...a, id: 1 }),
+        } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        await assert.rejects(
+            () => serviceLivre.validar({ turmaId: 10, salaId: 2, horario: "LIXO_INVALIDO" }),
+            /Formato de horário SIGAA não reconhecido/
+        );
+        await assert.rejects(
+            () => serviceLivre.confirmar({ turmaId: 10, salaId: 2, horario: "LIXO_INVALIDO" }),
+            /Formato de horário SIGAA não reconhecido/
+        );
+        await assert.rejects(
+            () => serviceLivre.validar({ turmaId: 10, salaId: 2, horario: 123 as any }),
+            /horario/
+        );
+        await assert.rejects(
+            () => serviceLivre.validar({ turmaId: true as any, salaId: 2 }),
+            /turmaId/
+        );
+        await assert.rejects(
+            () => serviceLivre.validar({ turmaId: 1.5, salaId: 2 }),
+            /turmaId/
+        );
+
+        // Normalização de horário minúsculo
+        const validado = await serviceLivre.validar({ turmaId: 10, salaId: 2, horario: "35t12" });
+        assert.equal(validado.horario, "35T12");
+
+        // Proíbe atribuir status EXTERNA_FIXA manualmente
+        await assert.rejects(
+            () => serviceLivre.confirmar({ turmaId: 10, salaId: 2, horario: "35T12", status: "EXTERNA_FIXA" }),
+            /EXTERNA_FIXA/
+        );
+
+        // Bloqueia edição de registro EXTERNA_FIXA existente
+        const serviceExterna = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, {
+            buscarPorTurmaId: async () => ({
+                id: 55,
+                turma: turmaSemDocente,
+                sala: salaGrande,
+                horarioCodigo: "24T12",
+                status: "EXTERNA_FIXA",
+            }),
+            listarPorSemestre: async () => [],
+        } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        await assert.rejects(
+            () => serviceExterna.confirmar({ turmaId: 10, salaId: 2, horario: "35T12" }),
+            /EXTERNA_FIXA/
+        );
+
+        // Não devolve falso positivo quando atualização concorrente afeta 0 linhas
+        const serviceConcorrente = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, {
+            buscarPorTurmaId: async () => ({
+                id: 88,
+                turma: turmaSemDocente,
+                sala: salaGrande,
+                horarioCodigo: "24M12",
+                status: "RASCUNHO",
+            }),
+            listarPorSemestre: async () => [],
+            atualizarSalaEHorario: async () => false,
+        } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+        await assert.rejects(
+            () => serviceConcorrente.confirmar({ turmaId: 10, salaId: 2, horario: "35T12" }),
+            /removida concorrentemente/
+        );
     });
 });

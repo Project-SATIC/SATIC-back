@@ -1,4 +1,4 @@
-import { closePool, comTransacao, testConnection } from "../db/connection.ts";
+import { closePool, comTransacao, formatarErro, testConnection } from "../db/connection.ts";
 import {
     AlocacaoRepository,
     DisciplinaRepository,
@@ -98,8 +98,7 @@ async function main(): Promise<void> {
         console.log(`  - Turmas: ${resumo.turmas}`);
         console.log(`  - Reservas EXTERNA_FIXA: ${resumo.reservasExternas}`);
     } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[SATIC-SEED] Erro durante o seed:", msg);
+        console.error("[SATIC-SEED] Erro durante o seed:", formatarErro(err));
         process.exit(1);
     } finally {
         await closePool();

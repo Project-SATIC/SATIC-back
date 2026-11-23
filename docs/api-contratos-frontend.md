@@ -110,6 +110,7 @@ Retorna as turmas ofertadas, com suas disciplinas e professores vinculados (incl
           "nome": "RANILSON OSCAR ARAUJO PAIVA",
           "indisponibilidades": [
             {
+              "professorMatricula": "2024389",
               "diaSemana": "SEX",
               "turno": "T",
               "indiceHorario": "56"
@@ -157,6 +158,14 @@ Lista os docentes cadastrados e suas restrições de indisponibilidade (RN-02).
 
 ---
 
+### `GET /api/professores/:siape`
+Busca um docente específico por matrícula SIAPE, incluindo suas restrições de indisponibilidade.
+
+* **Resposta 200**: Objeto `Professor`.
+* **Resposta 404**: `{ "erro": "Professor com SIAPE '999' não encontrado" }`
+
+---
+
 ### `GET /api/disciplinas`
 Lista as disciplinas da matriz curricular.
 
@@ -174,8 +183,16 @@ Lista as disciplinas da matriz curricular.
 
 ---
 
+### `GET /api/disciplinas/:codigo`
+Busca uma disciplina específica pelo código (case-insensitive).
+
+* **Resposta 200**: Objeto `Disciplina`.
+* **Resposta 404**: `{ "erro": "Disciplina 'COMP999' não encontrada" }`
+
+---
+
 ### `GET /api/alocacoes`
-Retorna as alocações físicas registradas no banco de dados.
+Retorna as alocações físicas registradas no banco de dados (com turma, disciplina, sala e docentes hidratados).
 
 * **Query Parameters (Opcionais)**:
   * `semestre`: Filtra alocações por semestre da turma (ex: `?semestre=2026.2`).
@@ -188,9 +205,16 @@ Retorna as alocações físicas registradas no banco de dados.
         "id": 1,
         "codigoTurma": "01",
         "semestre": "2026.2",
+        "cursosOfertados": "CC",
+        "horarioSigaa": "35M34",
+        "requerAlocacaoIc": true,
         "disciplina": { "codigo": "COMP360", "nome": "PROGRAMAÇÃO 1", "cargaHoraria": 60, "exigeLaboratorio": true },
         "vagas": 45,
-        "matriculados": 42
+        "matriculados": 42,
+        "professores": [
+          { "matriculaSiape": "2024389", "nome": "RANILSON OSCAR ARAUJO PAIVA", "indisponibilidades": [] }
+        ],
+        "cargaHorariaPorDocente": { "2024389": 60 }
       },
       "sala": {
         "id": 6,
@@ -202,7 +226,8 @@ Retorna as alocações físicas registradas no banco de dados.
       },
       "horarioCodigo": "35M34",
       "status": "DEFINITIVA",
-      "dataGeracao": "2026-11-17T22:00:00.000Z"
+      "dataGeracao": "2026-11-17T22:00:00.000Z",
+      "atualizadoEm": "2026-11-17T22:05:00.000Z"
     }
   ]
   ```
@@ -219,11 +244,13 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
   {
     "semestre": "2026.2",
     "persistir": true,
+    "limiteNos": 300000,
     "semSalas": ["Auditório CEPETEC"]
   }
   ```
   * `semestre` (string, opcional): Padrão `"2026.2"`.
   * `persistir` (boolean, opcional): Padrão `true`. Se `false`, atua em modo *preview* (simulação sem gravar no banco).
+  * `limiteNos` (integer, opcional): Limite máximo de nós na busca (`1` a `5000000`).
   * `semSalas` (string[], opcional): Lista de nomes de salas a desconsiderar no cálculo.
 
 * **Resposta 200**:
@@ -239,7 +266,7 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
       "pendentes": 0,
       "podas": 124,
       "nosVisitados": 86,
-      "tempoMs": 14.8
+      "tempoMs": 15
     },
     "alocacoes": [ ... ],
     "pendentes": []
@@ -320,10 +347,14 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
       "turma": { ... },
       "sala": { ... },
       "horarioCodigo": "35T34",
-      "status": "DEFINITIVA"
+      "status": "DEFINITIVA",
+      "dataGeracao": "2026-11-17T22:00:00.000Z",
+      "atualizadoEm": "2026-11-17T22:05:00.000Z"
     }
   }
   ```
+
+> **Proteção de reservas externas:** `POST /api/alocacoes/confirmar` aceita apenas `status` `"RASCUNHO"` ou `"DEFINITIVA"` e retorna `409 Conflict` se o cliente tentar alterar uma alocação com status `"EXTERNA_FIXA"` ou atribuir `"EXTERNA_FIXA"` manualmente. Da mesma forma, `DELETE /api/alocacoes/:id` recusa com `409 Conflict` a remoção de reservas `"EXTERNA_FIXA"`.
 
 * **Resposta 409 Conflict (Rejeição por Violação de Regras)**:
   ```json
@@ -341,7 +372,23 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 
 ---
 
-## 4. Guia de Integração do Front-end
+## 4. Endpoints de Gerenciamento (CRUD)
+
+Todos os endpoints de escrita retornam `400 Bad Request` para payload inválido, `404 Not Found` quando o recurso não existe e `409 Conflict` em violações de unicidade ou remoção de registro referenciado por chave estrangeira.
+
+- **Salas**: `POST /api/salas` (`201`), `PUT /api/salas/:id` (`200`), `DELETE /api/salas/:id` (`204`)
+- **Disciplinas**: `POST /api/disciplinas` (`201`), `PUT /api/disciplinas/:codigo` (`200`), `DELETE /api/disciplinas/:codigo` (`204`)
+- **Professores**: `POST /api/professores` (`201`), `PUT /api/professores/:siape` (`200`), `DELETE /api/professores/:siape` (`204`)
+- **Restrições Docentes (RN-02)**:
+  - `POST /api/professores/:siape/restricoes` (`201`): aceita `{ "horarioIndisponivel": "SEX-T-56" }` ou `{ "diaSemana": "SEX", "turno": "T", "indiceHorario": "56" }`
+  - `PUT /api/professores/:siape/restricoes` (`200`): substitui toda a lista `{ "indisponibilidades": ["SEX-T-56", ...] }`
+  - `DELETE /api/professores/:siape/restricoes/:horario` (`204`)
+- **Turmas**: `POST /api/turmas` (`201`), `PUT /api/turmas/:id` (`200`), `DELETE /api/turmas/:id` (`204`)
+- **Alocações**: `GET /api/alocacoes/:id` (`200`), `DELETE /api/alocacoes/:id` (`204`)
+
+---
+
+## 5. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade
 1. Fazer `GET /api/salas?alocavel_ic=true` para renderizar as colunas/linhas das salas disponíveis.

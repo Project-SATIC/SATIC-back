@@ -18,6 +18,20 @@ function mapearLinha(row: DisciplinaRow): Disciplina {
 }
 
 export class DisciplinaRepository {
+    async criar(disciplina: Disciplina, executor?: QueryExecutor): Promise<Disciplina> {
+        const sql = `
+            INSERT INTO disciplina (codigo, nome, carga_horaria, exige_laboratorio)
+            VALUES ($1, $2, $3, $4)
+            RETURNING codigo, nome, carga_horaria, exige_laboratorio;
+        `;
+        const res = await executarQuery<DisciplinaRow>(
+            sql,
+            [disciplina.codigo, disciplina.nome, disciplina.cargaHoraria, disciplina.exigeLaboratorio],
+            executor
+        );
+        return mapearLinha(res.rows[0]);
+    }
+
     async inserir(disciplina: Disciplina, executor?: QueryExecutor): Promise<Disciplina> {
         const sql = `
             INSERT INTO disciplina (codigo, nome, carga_horaria, exige_laboratorio)
@@ -67,5 +81,37 @@ export class DisciplinaRepository {
             executor
         );
         return res.rows.map(mapearLinha);
+    }
+
+    async atualizar(
+        codigo: string,
+        dados: Partial<Omit<Disciplina, "codigo">>,
+        executor?: QueryExecutor
+    ): Promise<Disciplina | null> {
+        const sql = `
+            UPDATE disciplina
+            SET nome = COALESCE($1, nome),
+                carga_horaria = COALESCE($2, carga_horaria),
+                exige_laboratorio = COALESCE($3, exige_laboratorio)
+            WHERE codigo = $4
+            RETURNING codigo, nome, carga_horaria, exige_laboratorio;
+        `;
+        const res = await executarQuery<DisciplinaRow>(
+            sql,
+            [
+                dados.nome ?? null,
+                dados.cargaHoraria ?? null,
+                dados.exigeLaboratorio ?? null,
+                codigo,
+            ],
+            executor
+        );
+        if (res.rows.length === 0) return null;
+        return mapearLinha(res.rows[0]);
+    }
+
+    async deletar(codigo: string, executor?: QueryExecutor): Promise<boolean> {
+        const res = await executarQuery("DELETE FROM disciplina WHERE codigo = $1;", [codigo], executor);
+        return (res.rowCount ?? 0) > 0;
     }
 }

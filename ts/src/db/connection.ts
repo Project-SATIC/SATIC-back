@@ -3,10 +3,32 @@ import pg from "pg";
 
 const { Pool } = pg;
 
+export function formatarErro(err: unknown): string {
+    if (err instanceof AggregateError && err.errors.length > 0) {
+        const inner = err.errors
+            .map((e: unknown) => formatarErro(e))
+            .filter((m) => m !== "")
+            .join("; ");
+        return inner || err.message || "Falha de conexão (AggregateError)";
+    }
+    if (err instanceof Error) {
+        const code = (err as { code?: string }).code;
+        return err.message || code || err.name || "Erro desconhecido";
+    }
+    return String(err);
+}
+
 function createPoolConfig(): pg.PoolConfig {
-    if (process.env.DATABASE_URL) {
+    const basePoolOptions = {
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+    };
+
+    if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim() !== "") {
         return {
             connectionString: process.env.DATABASE_URL,
+            ...basePoolOptions,
         };
     }
 
@@ -16,9 +38,7 @@ function createPoolConfig(): pg.PoolConfig {
         user: process.env.PGUSER || "postgres",
         password: process.env.PGPASSWORD || "postgres",
         database: process.env.PGDATABASE || "satic",
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
+        ...basePoolOptions,
     };
 }
 
@@ -67,16 +87,27 @@ export async function getClient(): Promise<pg.PoolClient> {
 
 export async function comTransacao<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await getClient();
+    let transacaoIniciada = false;
+    let descartarCliente = false;
     try {
         await client.query("BEGIN;");
+        transacaoIniciada = true;
         const resultado = await fn(client);
         await client.query("COMMIT;");
         return resultado;
     } catch (err) {
-        await client.query("ROLLBACK;");
+        if (transacaoIniciada) {
+            try {
+                await client.query("ROLLBACK;");
+            } catch {
+                descartarCliente = true;
+            }
+        } else {
+            descartarCliente = true;
+        }
         throw err;
     } finally {
-        client.release();
+        client.release(descartarCliente ? true : undefined);
     }
 }
 
@@ -85,12 +116,7 @@ export async function testConnection(): Promise<{ ok: boolean; message?: string 
         const res = await query("SELECT current_database() AS db, version() AS ver;");
         return { ok: true, message: `Conectado ao banco '${res.rows[0].db}'` };
     } catch (err: unknown) {
-        if (err instanceof AggregateError && err.errors.length > 0) {
-            const inner = err.errors.map((e: unknown) => (e instanceof Error ? e.message : String(e))).join("; ");
-            return { ok: false, message: inner || err.message || "Falha na conexão de rede (ECONNREFUSED)" };
-        }
-        const errorMsg = err instanceof Error ? (err.message || (err as { code?: string }).code || "Falha de conexão") : String(err);
-        return { ok: false, message: errorMsg };
+        return { ok: false, message: formatarErro(err) };
     }
 }
 

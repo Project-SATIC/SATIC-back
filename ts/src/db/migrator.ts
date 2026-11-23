@@ -1,16 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getClient, query } from "./connection.ts";
+import { comTransacao, formatarErro, query } from "./connection.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const MIGRATIONS_DIR = path.resolve(__dirname, "../../migrations");
+export const MIGRATIONS_DIR = path.resolve(__dirname, "../../migrations");
 
 export interface MigrationResult {
     arquivo: string;
     status: "aplicada" | "ja_executada" | "erro";
     mensagem?: string;
+}
+
+export async function listarArquivosMigrations(dir = MIGRATIONS_DIR): Promise<string[]> {
+    const arquivos = await fs.readdir(dir);
+    return arquivos
+        .filter((f) => f.endsWith(".sql"))
+        .sort((a, b) => a.localeCompare(b));
 }
 
 export async function inicializarTabelaMigrations(): Promise<void> {
@@ -32,11 +39,7 @@ export async function listarMigrationsExecutadas(): Promise<Set<string>> {
 export async function executarMigrations(): Promise<MigrationResult[]> {
     await inicializarTabelaMigrations();
     const executadas = await listarMigrationsExecutadas();
-
-    const arquivos = await fs.readdir(MIGRATIONS_DIR);
-    const sqlArquivos = arquivos
-        .filter((f) => f.endsWith(".sql"))
-        .sort((a, b) => a.localeCompare(b));
+    const sqlArquivos = await listarArquivosMigrations();
 
     const resultados: MigrationResult[] = [];
 
@@ -49,40 +52,53 @@ export async function executarMigrations(): Promise<MigrationResult[]> {
         const caminhoArquivo = path.join(MIGRATIONS_DIR, arquivo);
         const conteudoSql = await fs.readFile(caminhoArquivo, "utf-8");
 
-        const client = await getClient();
         try {
-            await client.query("BEGIN;");
-            await client.query(conteudoSql);
-            await client.query("INSERT INTO _migrations (nome) VALUES ($1);", [arquivo]);
-            await client.query("COMMIT;");
+            await comTransacao(async (client) => {
+                await client.query(conteudoSql);
+                await client.query("INSERT INTO _migrations (nome) VALUES ($1);", [arquivo]);
+            });
 
             resultados.push({ arquivo, status: "aplicada" });
             console.log(`[Migrations] Aplicada com sucesso: ${arquivo}`);
         } catch (err: unknown) {
-            await client.query("ROLLBACK;");
-            const msg = err instanceof Error ? err.message : String(err);
+            const msg = formatarErro(err);
             console.error(`[Migrations] Falha ao aplicar ${arquivo}:`, msg);
             resultados.push({ arquivo, status: "erro", mensagem: msg });
             throw new Error(`Erro na migration ${arquivo}: ${msg}`);
-        } finally {
-            client.release();
         }
     }
 
     return resultados;
 }
 
+export const SQL_RESET_BANCO = `
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+        EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+    END LOOP;
+
+    FOR r IN (
+        SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.prokind = 'f'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.objid = p.oid
+                AND d.deptype = 'e'
+          )
+    ) LOOP
+        EXECUTE 'DROP FUNCTION IF EXISTS public.' || quote_ident(r.proname) || '(' || r.args || ') CASCADE';
+    END LOOP;
+END $$;
+`;
+
 export async function resetarBanco(): Promise<void> {
-    console.log("[Migrations] Limpando todas as tabelas do SATIC...");
-    await query(`
-        DROP TABLE IF EXISTS alocacao CASCADE;
-        DROP TABLE IF EXISTS professor_turma CASCADE;
-        DROP TABLE IF EXISTS restricoes_horario CASCADE;
-        DROP TABLE IF EXISTS turma CASCADE;
-        DROP TABLE IF EXISTS disciplina CASCADE;
-        DROP TABLE IF EXISTS sala CASCADE;
-        DROP TABLE IF EXISTS professor CASCADE;
-        DROP TABLE IF EXISTS _migrations CASCADE;
-    `);
+    console.log("[Migrations] Limpando todas as tabelas e funções do schema public...");
+    await query(SQL_RESET_BANCO);
     console.log("[Migrations] Banco resetado.");
 }

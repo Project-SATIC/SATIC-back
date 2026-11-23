@@ -1,7 +1,8 @@
-import test, { describe } from "node:test";
+import test, { after, describe } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { criarApp } from "../src/api/app.ts";
+import { closePool } from "../src/db/connection.ts";
 
 interface MockResponse {
     status: number;
@@ -48,6 +49,10 @@ function simularRequisicao(
 
 describe("API Express - Rotas e Middlewares", () => {
     const app = criarApp();
+
+    after(async () => {
+        await closePool();
+    });
 
     test("GET / retorna metadados da API e lista de rotas", async () => {
         const res = await simularRequisicao(app, "GET", "/");

@@ -9,6 +9,7 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
+    "test:integration": "node test/integration/run-pg-integration.ts",
     "motor": "node tools/rodar-motor.ts",
     "migrate": "node src/db/run-migrations.ts",
     "migrate:reset": "node src/db/run-migrations.ts --reset",

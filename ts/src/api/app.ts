@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
+import { formatarErro } from "../db/connection.ts";
 import { healthRouter } from "./routes/health.routes.ts";
 import { disciplinasRouter } from "./routes/disciplinas.routes.ts";
 import { salasRouter } from "./routes/salas.routes.ts";
@@ -45,9 +46,23 @@ export function criarApp(): Express {
         res.status(404).json({ erro: `Rota ${req.method} ${req.path} não encontrada` });
     });
 
-    // Handler global de erros (500)
+    // Handler global de erros (preserva 4xx do parser Express, ex: JSON malformado 400 e payload grande 413)
     app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = formatarErro(err);
+        const httpErr = err as { status?: number; statusCode?: number; type?: string } | undefined;
+        const status = httpErr?.status ?? httpErr?.statusCode;
+
+        if (typeof status === "number" && status >= 400 && status < 500) {
+            const erroMsg =
+                httpErr?.type === "entity.parse.failed"
+                    ? "JSON inválido no corpo da requisição"
+                    : httpErr?.type === "entity.too.large"
+                        ? "Corpo da requisição excede o tamanho máximo permitido"
+                        : "Requisição inválida";
+            res.status(status).json({ erro: erroMsg, detalhes: msg });
+            return;
+        }
+
         console.error("[SATIC-API] Erro não tratado:", msg);
         res.status(500).json({ erro: "Erro interno no servidor", detalhes: msg });
     });

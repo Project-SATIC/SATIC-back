@@ -1,4 +1,4 @@
-import { closePool, testConnection } from "./connection.ts";
+import { closePool, formatarErro, testConnection } from "./connection.ts";
 import { executarMigrations, resetarBanco } from "./migrator.ts";
 
 async function main(): Promise<void> {
@@ -27,8 +27,7 @@ async function main(): Promise<void> {
 
         console.log(`[SATIC-DB] Concluído! ${aplicadas.length} migration(s) aplicada(s), ${jaExecutadas.length} já aplicada(s) anteriormente.`);
     } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("[SATIC-DB] Erro fatal durante a execução das migrations:", msg);
+        console.error("[SATIC-DB] Erro fatal durante a execução das migrations:", formatarErro(err));
         process.exit(1);
     } finally {
         await closePool();

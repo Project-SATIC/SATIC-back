@@ -41,7 +41,8 @@ npm run dev
 
 ### 5. Rodar a Suíte de Testes
 ```powershell
-npm test            # Executa todos os 54 testes automatizados
+npm test                  # Executa os testes unitários e de contrato
+npm run test:integration  # Executa a suíte real contra o banco isolado 'satic_test' no PostgreSQL
 ```
 
 ---
@@ -55,13 +56,18 @@ Os contratos detalhados de requisição, resposta e guia de integração para o 
 | Método | Endpoint | Descrição |
 |---|---|---|
 | `GET` | `/api/health` | Diagnóstico da API e status da conexão com PostgreSQL |
-| `GET` | `/api/turmas` | Lista turmas ofertadas (filtros: `semestre`, `requer_ic`) |
-| `GET` | `/api/turmas/:id` | Detalhes de uma turma específica |
-| `GET` | `/api/salas` | Catálogo de salas físicas (filtros: `alocavel_ic`, `bloco`) |
-| `GET` | `/api/salas/:id` | Detalhes de uma sala específica |
-| `GET` | `/api/professores` | Lista docentes e restrições de indisponibilidade (RN-02) |
-| `GET` | `/api/disciplinas` | Lista disciplinas da matriz |
+| `GET` / `POST` | `/api/salas` | Lista (filtros SQL: `alocavel_ic`, `bloco`) ou cria sala física |
+| `GET` / `PUT` / `DELETE` | `/api/salas/:id` | Busca, atualiza ou remove uma sala |
+| `GET` / `POST` | `/api/disciplinas` | Lista ou cria disciplina da matriz curricular |
+| `GET` / `PUT` / `DELETE` | `/api/disciplinas/:codigo` | Busca, atualiza ou remove uma disciplina |
+| `GET` / `POST` | `/api/professores` | Lista ou cria docente com indisponibilidades (RN-02) |
+| `GET` / `PUT` / `DELETE` | `/api/professores/:siape` | Busca, atualiza ou remove um docente |
+| `POST` / `PUT` | `/api/professores/:siape/restricoes` | Adiciona ou substitui indisponibilidades de um docente |
+| `DELETE` | `/api/professores/:siape/restricoes/:horario` | Remove uma indisponibilidade específica do docente |
+| `GET` / `POST` | `/api/turmas` | Lista (filtros SQL: `semestre`, `requer_ic`) ou cria turma |
+| `GET` / `PUT` / `DELETE` | `/api/turmas/:id` | Busca, atualiza ou remove uma turma e seus vínculos docentes |
 | `GET` | `/api/alocacoes` | Lista alocações salvas (filtro: `semestre`) |
+| `GET` / `DELETE` | `/api/alocacoes/:id` | Busca ou remove uma alocação específica |
 | `POST` | `/api/alocacoes/gerar` | Executa o motor (MRV + Best-Fit) e persiste alocações |
 | `POST` | `/api/alocacoes/validar` | Validação ágil de drag-and-drop sem persistir |
 | `POST` | `/api/alocacoes/confirmar` | Valida e salva o remanejamento (retorna 409 se inválido) |
