@@ -15,6 +15,7 @@ import {
     verificarCapacidade,
     verificarChoqueProfessor,
     verificarChoqueSala,
+    verificarDisponibilidadeSala,
     verificarIndisponibilidade,
     verificarRequisitoLab,
 } from "../shared/validador.ts";
@@ -62,11 +63,11 @@ export class StateSpaceSearch {
         this.#preExistentes = alocacoesPreExistentes ?? [];
         this.#maxNos = opcoes.maxNos ?? MAX_NOS_BUSCA;
 
-        // Domínio estático (RN-03 + RN-04) ordenado pela soft constraint
+        // Domínio estático (status Disponível + RN-03 + RN-04) ordenado pela soft constraint
         for (const t of turmasParaAlocar) {
             const candidatas: Sala[] = [];
             for (const s of salasDisponiveis) {
-                if (verificarCapacidade(t, s) && verificarRequisitoLab(t, s)) candidatas.push(s);
+                if (verificarDisponibilidadeSala(s) && verificarCapacidade(t, s) && verificarRequisitoLab(t, s)) candidatas.push(s);
                 else this.#podas++;
             }
             candidatas.sort(ordenarSalasSoftConstraint(t));

@@ -155,7 +155,7 @@ export function middlewareContextoELogs(req: Request, res: Response, next: NextF
     const contexto: ContextoRequisicao = {
         requestId,
         autor,
-        ip: req.ip || req.socket?.remoteAddress,
+        ip: req.socket ? (req.ip || req.socket.remoteAddress) : undefined,
         metodo: req.method,
         caminho: req.originalUrl || req.url,
         iniciadoEmMs,

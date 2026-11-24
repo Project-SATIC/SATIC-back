@@ -2,24 +2,24 @@
   "name": "satic-back-ts",
   "version": "0.1.0",
   "private": true,
-  "description": "Porte do SATIC-back (Java) para TypeScript: parser SIGAA, validador RN-01..RN-04 e motor StateSpaceSearch.",
+  "description": "Back-end do SATIC em TypeScript + Express + PostgreSQL: parser SIGAA, validador RN-01..RN-04, motor StateSpaceSearch e motor de sugestões.",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22.6"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.ts\"",
-    "test:integration": "node test/integration/run-pg-integration.ts",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
+    "test:integration": "node --experimental-strip-types test/integration/run-pg-integration.ts",
     "typecheck": "tsc --noEmit",
-    "motor": "node tools/rodar-motor.ts",
-    "migrate": "node src/db/run-migrations.ts",
-    "migrate:reset": "node src/db/run-migrations.ts --reset",
-    "db:seed": "node src/seed/db-seeder.ts",
-    "start": "node src/api/server.ts",
-    "dev": "node --watch src/api/server.ts",
-    "local": "node tools/banco-local.ts --com-api",
-    "db:local": "node tools/banco-local.ts",
-    "local:amostra": "node tools/banco-local.ts --com-api --amostra"
+    "motor": "node --experimental-strip-types tools/rodar-motor.ts",
+    "migrate": "node --experimental-strip-types src/db/run-migrations.ts",
+    "migrate:reset": "node --experimental-strip-types src/db/run-migrations.ts --reset",
+    "db:seed": "node --experimental-strip-types src/seed/db-seeder.ts",
+    "start": "node --experimental-strip-types src/api/server.ts",
+    "dev": "node --experimental-strip-types --watch src/api/server.ts",
+    "local": "node --experimental-strip-types tools/banco-local.ts --com-api",
+    "db:local": "node --experimental-strip-types tools/banco-local.ts",
+    "local:amostra": "node --experimental-strip-types tools/banco-local.ts --com-api --amostra"
   },
   "dependencies": {
     "cors": "^2.8.6",
