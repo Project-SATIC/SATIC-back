@@ -52,6 +52,12 @@ function codigoIntegridade(err: unknown): string | undefined {
     return codigo === "23505" || codigo === "23503" || codigo === "23514" ? codigo : undefined;
 }
 
+/** Dados incompatíveis com tipos/tamanhos das colunas do PostgreSQL: 22001, 22003, 22P02, 23502. */
+function codigoDadosInvalidos(err: unknown): string | undefined {
+    const codigo = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+    return codigo === "22001" || codigo === "22003" || codigo === "22P02" || codigo === "23502" ? codigo : undefined;
+}
+
 function mensagemDe(err: unknown): string {
     if (err instanceof AggregateError && err.errors.length > 0) return err.errors.map(mensagemDe).join("; ");
     if (err instanceof Error) return err.message || (err as { code?: string }).code || err.name;
@@ -131,6 +137,10 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
         }
         if (codigoIntegridade(err)) {
             res.status(409).json({ erro: "Operação viola a integridade do banco", detalhes: mensagemDe(err) });
+            return;
+        }
+        if (codigoDadosInvalidos(err)) {
+            res.status(400).json({ erro: "Dados inválidos para o banco de dados", detalhes: mensagemDe(err) });
             return;
         }
         console.error("[SATIC-API] Erro não tratado:", err);

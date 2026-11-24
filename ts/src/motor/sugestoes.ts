@@ -20,7 +20,7 @@
  *
  * Módulo puro (sem banco): o SugestoesService carrega os dados e chama `sugerirResolucoes`.
  */
-import { FormatoHorarioInvalidoError, obterConjuntoSlots } from "../shared/horario-sigaa.ts";
+import { FormatoHorarioInvalidoError, obterConjuntoSlots, slotsDaIndisponibilidade } from "../shared/horario-sigaa.ts";
 import {
     AULAS_POR_TURNO, DIAS_GRADE, aulasDoHorario, blocosDoHorario, formatoDoHorario, idAula,
     montarHorarioSigaa, turnosPermitidos, verificarFormatoHorario,
@@ -30,7 +30,7 @@ import { chaveTurma, mesmaTurma } from "../shared/tipos.ts";
 import type { Alocacao, DiaSemana, Sala, Turma } from "../shared/tipos.ts";
 import {
     diagnosticarViolacoes, ordenarSalasSoftConstraint, verificarCapacidade, verificarChoqueProfessor, verificarChoqueSala,
-    verificarEscopoEspacial, verificarIndisponibilidade, verificarRequisitoLab, type Violacao,
+    verificarDisponibilidadeSala, verificarEscopoEspacial, verificarIndisponibilidade, verificarRequisitoLab, type Violacao,
 } from "../shared/validador.ts";
 import { StateSpaceSearch } from "./state-space-search.ts";
 
@@ -227,12 +227,22 @@ export function gerarHorariosCandidatos(turma: Turma, horarioAtual: string, muda
         escolher(0, [], []);
     }
 
+    const preferidosSet = new Set<string>();
+    for (const prof of turma.professores ?? []) {
+        for (const pref of prof.preferencias ?? []) {
+            for (const slot of slotsDaIndisponibilidade(pref)) preferidosSet.add(slot);
+        }
+    }
+
     const parecenca = (h: string) => {
         const aulas = aulasDoHorario(h);
         const iguais = aulas.filter((a) => atualSet.has(idAula(a))).length;
         const mesmosDias = new Set(aulas.map((a) => a.dia).filter((d) => diasAtuais.has(d))).size;
         const mesmoTurno = aulas.filter((a) => turnosAtuais.has(a.turno)).length;
-        return iguais * 100 + mesmosDias * 10 + mesmoTurno;
+        const preferenciais = preferidosSet.size > 0
+            ? aulas.filter((a) => preferidosSet.has(idAula(a))).length
+            : 0;
+        return iguais * 100 + mesmosDias * 10 + preferenciais * 5 + mesmoTurno;
     };
     const pontuados = resultado.filter((h) => h !== horarioAtual).map((h) => ({ h, p: parecenca(h) }));
     pontuados.sort((a, b) => b.p - a.p || a.h.localeCompare(b.h));
@@ -247,7 +257,7 @@ interface Estado {
 function salaLivre(turma: Turma, horario: string, salas: readonly Sala[], estado: Estado, excluir?: Set<number>): Sala | null {
     const t = comHorario(turma, horario);
     const candidatas = salas
-        .filter((s) => !excluir?.has(s.id!) && verificarCapacidade(t, s) && verificarRequisitoLab(t, s) && verificarEscopoEspacial(t, s))
+        .filter((s) => !excluir?.has(s.id!) && verificarDisponibilidadeSala(s) && verificarCapacidade(t, s) && verificarRequisitoLab(t, s) && verificarEscopoEspacial(t, s))
         .sort(ordenarSalasSoftConstraint(t));
     return candidatas.find((s) => verificarChoqueSala(t, s, estado.alocacoes, horario)) ?? null;
 }
@@ -263,14 +273,18 @@ function horarioAceitavel(turma: Turma, horario: string, estado: Estado): boolea
 
 export function sugerirResolucoes(
     turmas: readonly Turma[],
-    salasDoPool: readonly Sala[],
+    salasDoPoolBrutas: readonly Sala[],
     alocacoes: readonly Alocacao[],
     opcoes: OpcoesSugestao = {},
 ): ResultadoSugestoes {
     const inicio = performance.now();
+    const salasDoPool = salasDoPoolBrutas.filter(verificarDisponibilidadeSala);
     const limite = opcoes.limiteNos ?? LIMITE_NOS_SUGESTOES;
     const maxAlt = opcoes.maxAlternativas ?? 3;
     const mudarFormato = new Set(opcoes.permitirMudarFormato ?? []);
+    for (const t of turmas) {
+        if (t.id != null && t.permitirMudarFormato) mudarFormato.add(t.id);
+    }
     let nos = 0;
     const gastar = (n = 1) => { nos += n; return nos <= limite; };
 
@@ -363,8 +377,9 @@ export function sugerirResolucoes(
         for (const h of candidatos) {
             if (!gastar()) break;
             if (!horarioAceitavel(t, h, estado)) continue;
-            // Mesma hora: prefere continuar na sala atual se ela ficou livre
-            const manterSala = atual && h === hAtual && verificarChoqueSala(comHorario(t, h), atual.sala, estado.alocacoes, h)
+            // Mesma hora: prefere continuar na sala atual se ela ficou livre e não está em manutenção
+            const manterSala = atual && h === hAtual && verificarDisponibilidadeSala(atual.sala)
+                && verificarChoqueSala(comHorario(t, h), atual.sala, estado.alocacoes, h)
                 && verificarCapacidade(t, atual.sala) && verificarRequisitoLab(t, atual.sala) && verificarEscopoEspacial(t, atual.sala);
             const sala = manterSala ? atual!.sala : salaLivre(t, h, salasDoPool, estado);
             if (!sala) continue;
@@ -387,7 +402,7 @@ export function sugerirResolucoes(
             if (!horarioAceitavel(t, h, estado)) continue;
             const tH = comHorario(t, h);
             const salasCompativeis = salasDoPool
-                .filter((s) => verificarCapacidade(tH, s) && verificarRequisitoLab(tH, s) && verificarEscopoEspacial(tH, s))
+                .filter((s) => verificarDisponibilidadeSala(s) && verificarCapacidade(tH, s) && verificarRequisitoLab(tH, s) && verificarEscopoEspacial(tH, s))
                 .sort(ordenarSalasSoftConstraint(tH));
             for (const s of salasCompativeis) {
                 if (!gastar()) break;

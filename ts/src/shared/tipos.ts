@@ -9,6 +9,7 @@
 export type DiaSemana = "SEG" | "TER" | "QUA" | "QUI" | "SEX" | "SAB";
 export type Turno = "M" | "T" | "N";
 export type StatusAlocacao = "RASCUNHO" | "DEFINITIVA" | "EXTERNA_FIXA";
+export type StatusSala = "Disponível" | "Manutenção";
 
 export interface Disciplina {
     codigo: string;
@@ -32,6 +33,12 @@ export interface Professor {
     matriculaSiape: string;
     nome: string;
     indisponibilidades: IndisponibilidadeDocente[];
+    /** Janelas marcadas como preferenciais pelo docente. */
+    preferencias?: IndisponibilidadeDocente[];
+    /** Regime de trabalho (ex.: "DE", "40h", "20h"). */
+    regime?: string | null;
+    /** Carga máxima semanal de aulas, se definida. */
+    cargaMax?: number | null;
 }
 
 export interface Sala {
@@ -43,6 +50,11 @@ export interface Sala {
     /** "IC", "BL12", "IM", "CTEC" ou "IF". */
     bloco: string;
     alocavelIc: boolean;
+    /** "Disponível" (padrão) ou "Manutenção". Sala em manutenção sai do pool do motor e do validador. */
+    status?: StatusSala;
+    pcs?: number;
+    equipamentos?: string[];
+    observacao?: string | null;
 }
 
 export interface Turma {
@@ -67,6 +79,8 @@ export interface Turma {
      * precisa mesmo quando está sem horário (pendente). Ausente: vale o número de aulas do horário.
      */
     aulasSemanais?: number | null;
+    /** Permite ao motor de sugestões trocar o formato dos blocos (ex.: 2+2 -> 4 num dia). */
+    permitirMudarFormato?: boolean;
 }
 
 export interface Alocacao {
@@ -89,6 +103,12 @@ export function numeroAlunos(turma: Turma): number {
 export function isLaboratorio(sala: Sala): boolean {
     const tipo = sala.tipoEspaco?.toLowerCase();
     return tipo === "laboratório" || tipo === "laboratorio";
+}
+
+/** True quando a sala está disponível para uso (status ausente ou "Disponível"). */
+export function isSalaDisponivel(sala: Sala | null | undefined): boolean {
+    if (!sala) return false;
+    return !sala.status || sala.status === "Disponível";
 }
 
 /** Igualdade de Turma.equals(): por id quando ambos existem; senão pela chave natural. */

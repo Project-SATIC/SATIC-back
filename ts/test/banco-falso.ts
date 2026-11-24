@@ -96,9 +96,9 @@ export class BancoFalso implements Executor {
             }
             return linhas.map((a) => this.#linhaAlocacao(a));
         }
-        if (s.startsWith("SELECT status FROM alocacao WHERE id = $1")) {
+        if (s.startsWith("SELECT status FROM alocacao WHERE id = $1") || s.startsWith("SELECT a.status, t.semestre FROM alocacao a")) {
             const a = this.alocacoes.find((x) => x.id === Number(p[0]));
-            return a ? [{ status: a.status }] : [];
+            return a ? [{ status: a.status, semestre: this.#turma(a.turmaId).semestre }] : [];
         }
         if (s.includes("FROM turma t JOIN disciplina d")) {
             let turmas = [...this.turmas];
@@ -107,12 +107,17 @@ export class BancoFalso implements Executor {
             turmas.sort((a, b) => bin(a.disciplina.codigo, b.disciplina.codigo) || bin(a.codigoTurma, b.codigoTurma));
             return turmas.map((t) => this.#linhaTurma(t));
         }
-        if (s.startsWith("SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic FROM sala")) {
+        if (s.startsWith("SELECT id, nome, capacidade, tipo_espaco, bloco, alocavel_ic")) {
             let salas = [...this.salas];
             if (s.includes("WHERE id = $1")) salas = salas.filter((x) => x.id === Number(p[0]));
-            if (s.includes("WHERE alocavel_ic = TRUE")) salas = salas.filter((x) => x.alocavelIc);
+            if (s.includes("WHERE alocavel_ic = TRUE")) salas = salas.filter((x) => x.alocavelIc && (!x.status || x.status === "Disponível"));
             salas.sort((a, b) => bin(a.bloco, b.bloco) || bin(a.nome, b.nome));
-            return salas.map((x) => ({ id: x.id, nome: x.nome, capacidade: x.capacidade, tipo_espaco: x.tipoEspaco, bloco: x.bloco, alocavel_ic: x.alocavelIc }));
+            return salas.map((x) => ({
+                id: x.id, nome: x.nome, capacidade: x.capacidade, tipo_espaco: x.tipoEspaco,
+                bloco: x.bloco, alocavel_ic: x.alocavelIc,
+                status: x.status ?? "Disponível", pcs: x.pcs ?? null,
+                equipamentos: x.equipamentos ?? [], observacao: x.observacao ?? null,
+            }));
         }
         if (s.startsWith("INSERT INTO alocacao")) {
             const status = (s.includes("'EXTERNA_FIXA'") ? "EXTERNA_FIXA" : p[3]) as StatusAlocacao;
@@ -172,6 +177,7 @@ export class BancoFalso implements Executor {
         return {
             a_id: a.id, a_horario: a.horario, a_status: a.status, a_data: a.data, a_atualizado: a.data,
             s_id: sala.id, s_nome: sala.nome, s_cap: sala.capacidade, s_tipo: sala.tipoEspaco, s_bloco: sala.bloco, s_alocavel: sala.alocavelIc,
+            s_status: sala.status ?? "Disponível", s_pcs: sala.pcs ?? null, s_equip: sala.equipamentos ?? [], s_obs: sala.observacao ?? null,
             ...this.#linhaTurma(this.#turma(a.turmaId)),
         };
     }

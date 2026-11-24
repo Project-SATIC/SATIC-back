@@ -33,14 +33,14 @@ describe("Integração Real com PostgreSQL Externo (Migrations 001-004, CRUD, Se
         await closePool();
     });
 
-    test("1. resetarBanco e executarMigrations aplicam 001..004 de forma idempotente", async () => {
+    test("1. resetarBanco e executarMigrations aplicam 001..005 de forma idempotente", async () => {
         await resetarBanco();
         const r1 = await executarMigrations();
-        assert.equal(r1.length, 4);
+        assert.equal(r1.length, 5);
         assert.ok(r1.every((r) => r.status === "aplicada"));
 
         const r2 = await executarMigrations();
-        assert.equal(r2.length, 4);
+        assert.equal(r2.length, 5);
         assert.ok(r2.every((r) => r.status === "ja_executada"));
     });
 
@@ -134,5 +134,16 @@ describe("Integração Real com PostgreSQL Externo (Migrations 001-004, CRUD, Se
             body: JSON.stringify({ semestre: "2026.2" }),
         });
         assert.equal(sug.status, 200);
+
+        // Publicar semestre congela RASCUNHO -> DEFINITIVA e grava publicada = true
+        const pub = await fetch(`${base}/api/alocacoes/publicar`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ semestre: "2026.2" }),
+        });
+        assert.equal(pub.status, 200);
+        const pubBody = await pub.json();
+        assert.equal(pubBody.publicada, true);
+        assert.equal(pubBody.congeladas, 86);
     });
 });
