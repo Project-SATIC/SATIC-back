@@ -29,12 +29,18 @@ npm run local:amostra  # o mesmo, só com 17 turmas reais para testes manuais (d
   ```
 * O PGlite é um PostgreSQL 18 real compilado para WebAssembly, mas com uma única sessão. Serve para desenvolvimento e para integrar o front, não para produção. Para produção, use os passos abaixo.
 
-### 2. Configurar o Banco de Dados (PostgreSQL)
-Você pode subir o PostgreSQL via Docker na raiz do projeto:
+### 2. Executar com Docker Compose (PostgreSQL 16 + API SATIC-back)
+Na raiz do repositório (`SATIC-back/`):
 ```powershell
-docker compose up -d
+docker compose up -d --build
 ```
-Ou usar seu PostgreSQL local. As credenciais padrão estão no arquivo `.env`:
+* O container `satic-postgres` sobe com `healthcheck` (`pg_isready`).
+* O container `satic-api` (`ts/Dockerfile`, Node 22 Alpine, usuário não-root) aguarda o banco ficar saudável, executa automaticamente as migrations `001` a `006` (`AUTO_MIGRATE=true`), popula a oferta 2026.2 e gera a grade inicial caso o banco esteja vazio (`AUTO_SEED=true`), expondo a API em `http://localhost:3001`.
+* Para subir apenas o banco via Docker e rodar a API localmente no host:
+```powershell
+docker compose up -d postgres
+```
+As credenciais padrão estão no arquivo `.env`:
 ```env
 PGHOST=localhost
 PGPORT=5432

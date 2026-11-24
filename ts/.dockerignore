@@ -1,0 +1,11 @@
+node_modules
+.pglite
+.pglite-amostra
+.pglite.lock
+.env
+test
+tools
+*.log
+.git
+.gitignore
+README.md

@@ -545,6 +545,26 @@ const { RELOGIO_AULAS, CURSOS, montarHorarioSigaa, blocosDoHorario } = await imp
 
 ---
 
+## 3.2. Mensageria Assíncrona (Worker Threads), Auditoria (Migration 006) e Observabilidade
+
+### Cabeçalhos de Correlação e Autoria
+* **`X-Request-Id`** (entrada/saída): se enviado pelo cliente (até 64 caracteres alfanuméricos/`._-`), é preservado; caso contrário, o servidor gera um UUID v4 e o devolve no cabeçalho `X-Request-Id` da resposta.
+* **`X-Actor`** ou **`X-User`** (entrada): identifica o responsável pela operação (ex.: `"coord.cc"`, `"secretaria.ic"`). É registrado nos logs estruturados em JSON e propagado para a sessão transacional do PostgreSQL (`satic.autor`), alimentando automaticamente as triggers da tabela `auditoria_log`.
+
+### Fila Assíncrona do Motor (`/api/alocacoes/jobs`)
+Executa buscas combinatórias pesadas (`StateSpaceSearch` e `sugerirResolucoes`) em **Worker Threads** separadas do Event Loop HTTP:
+* **`POST /api/alocacoes/jobs/gerar`** (ou `POST /api/alocacoes/gerar?async=true`) (`202 Accepted`): enfileira a geração da grade do semestre e retorna imediatamente o metadado do job `{ jobId, tipo: "gerar", semestre, status: "PENDENTE" | "EXECUTANDO", autor, requestId, criadoEm }`.
+* **`POST /api/alocacoes/jobs/sugestoes`** (ou `POST /api/alocacoes/sugestoes?async=true`) (`202 Accepted`): enfileira o cálculo do motor de sugestões em background.
+* **`GET /api/alocacoes/jobs?semestre=2026.2&status=CONCLUIDO`** (`200`): lista os jobs recentes da fila.
+* **`GET /api/alocacoes/jobs/:jobId`** (`200` / `404`): retorna o estado atualizado do job e, quando `status === "CONCLUIDO"`, o payload completo em `resultado` (ou `erro` quando `status === "FALHOU"`).
+
+### Trilha de Auditoria Transacional (`/api/auditoria`)
+* **`GET /api/auditoria`** (`200`): lista os eventos gravados na tabela `auditoria_log` pelas triggers JSONB do PostgreSQL (`alocacao`, `sala`, `turma`, `professor`, `disciplina`, `semestre_publicacao`).
+  * Filtros opcionais de query string: `entidade`, `entidade_id`, `operacao` (`INSERT`, `UPDATE`, `DELETE`, `PUBLICACAO`, `DESPUBLICACAO`, `GERACAO_MOTOR`, `LOTE`), `autor`, `request_id` e `limite` (`1..500`, padrão `50`).
+* **`GET /api/auditoria/:id`** (`200` / `404`): retorna os detalhes de um registro de auditoria específico com `dadosAnteriores` e `dadosNovos`.
+
+---
+
 ## 4. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade

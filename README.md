@@ -1,97 +1,57 @@
-# SATIC-back
+# SATIC-back — TypeScript + Express + PostgreSQL
 
-Back-end em Java + SQLite do **SATIC** (*Sistema de Alocação de Turmas do Instituto de Computação — UFAL*), estruturado com foco inicial na **fase pós-oferta acadêmica** (horários importados do SIGAA e alocação otimizada de espaços físicos do Bloco IC, Bloco 12 e salas cedidas pelo IM).
-
-> **Migração em andamento (branch `ts-back-dev`):** o back-end está sendo portado para **TypeScript + Express**, na pasta [`ts/`](ts/). Os motivos e o andamento estão em [`docs/registro-migracao-typescript.md`](docs/registro-migracao-typescript.md), e as instruções para rodar estão em [Versão TypeScript](#versão-typescript-ts). O código Java abaixo continua funcionando, e é a referência usada para conferir os resultados da nova versão.
+Back-end do **SATIC** (*Sistema de Alocação de Turmas do Instituto de Computação — UFAL*) desenvolvido em **TypeScript + Express**, com persistência relacional em **PostgreSQL** (suportando tanto PostgreSQL 16+ externo/Docker quanto **PGlite** embarcado para desenvolvimento local), modelo de **aulas de 50 minutos**, **Motor de Busca em Espaço de Estados (MRV + Best-Fit)**, **Motor de Sugestões de Horário + Sala** em `Worker Threads`, **Logs Estruturados JSON** e **Histórico Transacional de Auditoria**.
 
 ---
 
 ## Estrutura do Projeto
 
-* **`src/config/`**
-  * `DatabaseConnection`: fábrica de conexões JDBC para `data/satic.db` com ativação obrigatória de `PRAGMA foreign_keys = ON`.
-* **`src/model/`**
-  * Entidades de domínio: `Disciplina`, `Turma` (com suporte a co-docência N:M e turmas conjuntas CC/EC), `Professor`, `IndisponibilidadeDocente`, `Sala` (classificação unificada via `tipo_espaco`), `Alocacao`, `DiaSemana`, `Turno`.
-* **`src/dao/`**
-  * `DatabaseInitializer`: DDL idempotente (`CREATE TABLE IF NOT EXISTS`) das 7 tabelas relacionais.
-  * `DatabaseSeeder`: carga da oferta real **2026.2 (CC + EC)** com deduplicação automática de turmas compartilhadas e espaços do IC, BL12, IM e unidades externas.
-  * `SalaDAO`, `ProfessorDAO`, `DisciplinaDAO`, `TurmaDAO`, `AlocacaoDAO`: camada de acesso a dados via JDBC / `PreparedStatement`.
-* **`src/service/`**
-  * `SigaaHorarioParser`: converte expressões de horário SIGAA (simples, compostas, sábado `7` e noturno `N`) em slots atômicos `"DIA-TURNO+HORA"`.
-  * `ValidadorDeRestricoes`: implementa e audita as restrições rígidas **RN-01** (choque docente/co-docência), **RN-02** (indisponibilidade), **RN-03** (capacidade), **RN-04** (laboratório via `tipo_espaco`) e exclusividade de sala.
-* **`src/`**
-  * `StateSpaceSearch`: motor de busca em espaço de estados (Backtracking com poda antecipada, ordenação MRV e heurística *Best-Fit* com recuperação parcial).
-  * `Main`: inicializa/carrega o banco, executa a busca para 2026.2, persiste `alocacoes`, audita violações e compara os resultados com o gabarito SIGAA.
-* **`test/`**
-  * `SaticValidationSuite`: suíte de testes unitários, regressão, busca e integração SQLite em banco temporário isolado.
+* **`docker-compose.yml` e `ts/Dockerfile`**: Orquestração completa dos serviços `satic-postgres` (`postgres:16-alpine`) e `satic-api` (`node:22-alpine` não-root com `HEALTHCHECK` e `AUTO_MIGRATE`/`AUTO_SEED`).
 * **`docs/`**
-  * `satic_er_chen.drawio`: Diagrama Entidade-Relacionamento (DER) na notação clássica de Peter Chen.
-* **`lib/`**
-  * Driver JDBC (`sqlite-jdbc-3.45.1.0.jar`) e dependências SLF4J (`slf4j-api-2.0.12.jar`, `slf4j-simple-2.0.12.jar`).
+  * [`api-contratos-frontend.md`](docs/api-contratos-frontend.md): Especificação completa de todas as rotas REST (consultas, CRUD, geração, confirmação em lote, sugestões, publicação, fila assíncrona e auditoria).
+  * [`modelo-aulas-e-motor-de-sugestoes.md`](docs/modelo-aulas-e-motor-de-sugestoes.md): Modelo de aulas de 50 minutos (`M1–M6`, `T1–T6`, `N1–N4`, `SEG–SAB`), turnos por curso (`CC`, `EC`, `IA`) e arquitetura do motor de sugestões em 3 estágios.
+  * [`registro-migracao-typescript.md`](docs/registro-migracao-typescript.md): Histórico da evolução arquitetural para TypeScript + Express + PostgreSQL.
+  * [`satic_er_chen.drawio`](docs/satic_er_chen.drawio): Diagrama Entidade-Relacionamento (DER) na notação de Peter Chen.
+* **`ts/`**
+  * **`migrations/001..006`**:
+    * `001_criar_schema_inicial.sql`: 7 tabelas principais do modelo lógico.
+    * `002_integridade_alocacao.sql`: `UNIQUE(id_turma)` e `CHECK` constraints de domínio.
+    * `003_aulas_semanais_e_curso_ia.sql`: coluna `aulas_semanais` e curso `IA` noturno.
+    * `004_auditoria_alocacao.sql`: coluna e trigger `atualizado_em`.
+    * `005_campos_espacos_preferencias_publicacao.sql`: `status` (`Disponível`/`Manutenção`), `pcs`, `equipamentos`, `observacao` em `sala`; `preferencias_horario`; `semestre_publicacao`; `regime`, `carga_max` e `permitir_mudar_formato`.
+    * `006_historico_auditoria.sql`: tabela `auditoria_log` e triggers PL/pgSQL com snapshots `JSONB`.
+  * **`src/shared/`**: Tipos (`tipos.ts`), parser SIGAA (`horario-sigaa.ts`), modelo de grade de 50 min (`grade.ts`) e validador isomórfico (`validador.ts`), também servidos ao navegador via `GET /shared/*.js`.
+  * **`src/motor/`**: `StateSpaceSearch`, `sugestoes.ts`, `AlocadorService`, `RemanejamentoService`, `SugestoesService`, `motor-worker.ts` e `fila-motor.service.ts`.
+  * **`src/db/`**: Conexão e transações (`connection.ts`), `migrator.ts` e repositórios (`SalaRepository`, `ProfessorRepository`, `DisciplinaRepository`, `TurmaRepository`, `AlocacaoRepository`, `AuditoriaRepository`).
+  * **`src/api/`**: Servidor Express 5 (`app.ts`, `server.ts`), `logger.ts` e rotas REST (`routes/`).
+  * **`test/`**: Suíte completa de testes unitários, regressão de gabaritos, PGlite e integração PostgreSQL real.
 
 ---
 
-## Como Compilar e Executar
+## Como Executar
 
-Requisito: **JDK 21** (ou compatível) na raiz do repositório `SATIC-back`.
-
-### Windows (PowerShell)
-
-**1. Compilar o código-fonte e rodar o motor principal (`Main`):**
-```powershell
-New-Item -ItemType Directory -Force -Path "bin" | Out-Null
-$src = Get-ChildItem -Path "src" -Recurse -Filter "*.java" | ForEach-Object { $_.FullName }
-javac -encoding UTF-8 -cp "lib/*" -d bin $src
-java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "bin;lib/*" Main
-```
-
-**2. Compilar e executar a suíte de testes (`SaticValidationSuite`):**
-```powershell
-New-Item -ItemType Directory -Force -Path "bin-test" | Out-Null
-javac -encoding UTF-8 -cp "bin;lib/*" -d bin-test test/SaticValidationSuite.java
-java "-Dfile.encoding=UTF-8" "-Dstdout.encoding=UTF-8" -cp "bin-test;bin;lib/*" SaticValidationSuite
-```
-
-### Linux / macOS (Bash)
-
-Substitua `;` por `:` no classpath (`-cp "bin:lib/*"` e `-cp "bin-test:bin:lib/*"`), passando `$(find src -name "*.java")` para o `javac`.
-
----
-
-## Versão TypeScript (`ts/`)
-
-Requisito: **Node.js 22.18 ou mais recente** (confira com `node -v`).
-
-### Windows (PowerShell), Linux e macOS
-
-**1. Entrar na pasta e instalar dependências:**
+### Opção 1: Execução Local Imediata (PGlite — sem Docker)
 ```powershell
 cd ts
 npm install
+npm run local          # Sobe PGlite + migrations 001..006 + seed 2026.2 + grade inicial + API em http://localhost:3001
+# Ou com a amostra de 17 turmas reais para testes manuais:
+npm run local:amostra
 ```
 
-**2. Checar tipos e rodar os testes** (parser SIGAA, validador, motor, API, PGlite e gabaritos do Java):
+### Opção 2: PostgreSQL 16 via Docker ou Local
 ```powershell
-npm run typecheck
-npm test
+docker compose up -d
+cd ts
+npm install
+npm run migrate
+npm run db:seed
+npm start
 ```
-O resultado esperado termina em `pass 151` e `fail 0`.
 
-> No PowerShell do Windows, se aparecer o erro *"a execução de scripts foi desabilitada neste sistema"*, use `npm.cmd test` e `npm.cmd run motor`, ou rode direto com o Node: `node --test "test/**/*.test.ts"` e `node tools/rodar-motor.ts`.
-
-**3. Rodar o motor na base real 2026.2** (imprime as alocações em JSON):
+### Verificação e Testes
 ```powershell
-npm run motor
+cd ts
+npm run typecheck      # Checagem estrita de tipos TypeScript (tsc --noEmit)
+npm test               # Suíte completa (172 testes, incluindo PostgreSQL real via PGlite)
 ```
-A primeira linha mostra um resumo como `alocadas=86 pendentes=0 ... completo=true`. Para salvar o JSON em um arquivo, use `npm run motor > saida.json`.
-
-Opcionalmente, dá para simular cenários: `node tools/rodar-motor.ts "sem=Auditório IC"` remove uma sala, e `node tools/rodar-motor.ts "indisp=2024389:TER:T:34"` adiciona uma indisponibilidade a um docente.
-
-Detalhes da estrutura e de como regerar os gabaritos do Java: [`ts/README.md`](ts/README.md).
-
----
-
-## Observações de Banco Local
-
-* O arquivo `data/satic.db` é gerado automaticamente na primeira execução do `Main` (e ignorado pelo Git via `.gitignore`).
-* Caso precise recriar o banco local do zero após alterações no schema, remova `data/satic.db` (ou utilize `DatabaseInitializer.recreateSchema()`) e execute `Main` novamente.

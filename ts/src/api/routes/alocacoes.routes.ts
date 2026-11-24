@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { AlocacaoRepository } from "../../db/repositories/index.ts";
 import { AlocadorService, SEMESTRE_PADRAO } from "../../motor/alocador.service.ts";
+import { FilaMotorService, type StatusJobMotor } from "../../motor/fila-motor.service.ts";
 import { RemanejamentoService } from "../../motor/remanejamento.service.ts";
 import { MAX_NOS_BUSCA } from "../../motor/state-space-search.ts";
 import { SugestoesService, lerMovimentosRascunho } from "../../motor/sugestoes.service.ts";
@@ -14,11 +15,15 @@ import {
     lerListaDeTextosOpcional,
     lerSemestre,
     lerSemestreOpcionalQuery,
+    lerTextoObrigatorio,
+    lerTextoOpcionalQuery,
 } from "../../entrada.ts";
-import { ErroConflito, ErroNaoEncontrado } from "../../erros.ts";
+import { ErroConflito, ErroNaoEncontrado, ErroRequisicao } from "../../erros.ts";
 
 /** Teto do limite de nós aceito pela API (2x o padrão do motor) para uma requisição não travar o servidor. */
 export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 2;
+
+const STATUS_JOBS_VALIDOS = new Set<StatusJobMotor>(["PENDENTE", "EXECUTANDO", "CONCLUIDO", "FALHOU"]);
 
 export interface ServicosAlocacao {
     alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">
@@ -29,6 +34,7 @@ export interface ServicosAlocacao {
     alocador: Pick<AlocadorService, "gerarAlocacao">;
     remanejamento: Pick<RemanejamentoService, "validar" | "confirmar" | "confirmarLote">;
     sugestoes: Pick<SugestoesService, "sugerir" | "conflitos">;
+    fila?: Pick<FilaMotorService, "enfileirarGeracao" | "enfileirarSugestoes" | "buscarJob" | "listarJobs" | "aguardarJob">;
 }
 
 /** Erros lançados nos handlers (ErroHttp, JSON inválido etc.) seguem para o handler global em app.ts. */
@@ -38,6 +44,7 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
     const alocador = servicos.alocador ?? new AlocadorService();
     const remanejamento = servicos.remanejamento ?? new RemanejamentoService();
     const sugestoes = servicos.sugestoes ?? new SugestoesService();
+    const fila = servicos.fila ?? new FilaMotorService();
     const router = Router();
 
     const despublicarSeReal = async (semestre: string) => {
@@ -98,12 +105,69 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
      */
     router.post("/sugestoes", async (req: Request, res: Response) => {
         const body = lerCorpo(req.body);
-        res.json(await sugestoes.sugerir(lerSemestre(body.semestre, SEMESTRE_PADRAO), {
+        const semestre = lerSemestre(body.semestre, SEMESTRE_PADRAO);
+        const opcoesSugestao = {
             alvos: lerListaDeIdsOpcional(body.alvos, "alvos"),
             permitirMudarFormato: lerListaDeIdsOpcional(body.permitirMudarFormato, "permitirMudarFormato"),
             limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 2),
             maxAlternativas: lerInteiroOpcional(body.maxAlternativas, "maxAlternativas", 0, 10),
-        }, lerMovimentosRascunho(body.movimentos)));
+        };
+        const movimentos = lerMovimentosRascunho(body.movimentos);
+        const assincrono = lerBooleanoOpcional(body.async ?? req.query.async, "async") ?? false;
+        if (assincrono) {
+            const job = fila.enfileirarSugestoes(semestre, opcoesSugestao, movimentos);
+            res.status(202).json(job);
+            return;
+        }
+        res.json(await sugestoes.sugerir(semestre, opcoesSugestao, movimentos));
+    });
+
+    /** Enfileira cálculo assíncrono de sugestões em Worker Thread (202 Accepted). */
+    router.post("/jobs/sugestoes", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const semestre = lerSemestre(body.semestre, SEMESTRE_PADRAO);
+        const opcoesSugestao = {
+            alvos: lerListaDeIdsOpcional(body.alvos, "alvos"),
+            permitirMudarFormato: lerListaDeIdsOpcional(body.permitirMudarFormato, "permitirMudarFormato"),
+            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_SUGESTOES * 2),
+            maxAlternativas: lerInteiroOpcional(body.maxAlternativas, "maxAlternativas", 0, 10),
+        };
+        const movimentos = lerMovimentosRascunho(body.movimentos);
+        const job = fila.enfileirarSugestoes(semestre, opcoesSugestao, movimentos);
+        res.status(202).json(job);
+    });
+
+    /** Enfileira geração assíncrona de grade em Worker Thread (202 Accepted). */
+    router.post("/jobs/gerar", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const semestre = lerSemestre(body.semestre, SEMESTRE_PADRAO);
+        const persistir = lerBooleanoOpcional(body.persistir, "persistir") ?? true;
+        const job = fila.enfileirarGeracao({
+            semestre,
+            persistir,
+            limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_MAXIMO_API),
+            semSalas: lerListaDeTextosOpcional(body.semSalas, "semSalas"),
+            preservarDefinitivas: lerBooleanoOpcional(body.preservarDefinitivas, "preservarDefinitivas") ?? true,
+        }, despublicarSeReal);
+        res.status(202).json(job);
+    });
+
+    /** Lista jobs assíncronos do motor (filtros opcionais: semestre, status). */
+    router.get("/jobs", async (req: Request, res: Response) => {
+        const semestre = lerSemestreOpcionalQuery(req.query.semestre);
+        const statusStr = lerTextoOpcionalQuery(req.query.status, "status");
+        if (statusStr && !STATUS_JOBS_VALIDOS.has(statusStr as StatusJobMotor)) {
+            throw new ErroRequisicao(`status inválido: use um de ${[...STATUS_JOBS_VALIDOS].join(", ")}`);
+        }
+        res.json(fila.listarJobs({ semestre, status: statusStr as StatusJobMotor | undefined }));
+    });
+
+    /** Consulta status e resultado de um job assíncrono do motor. */
+    router.get("/jobs/:jobId", async (req: Request, res: Response) => {
+        const jobId = lerTextoObrigatorio(req.params.jobId, "jobId", 64);
+        const job = fila.buscarJob(jobId);
+        if (!job) throw new ErroNaoEncontrado(`Job '${jobId}' não encontrado`);
+        res.json(job);
     });
 
     router.get("/", async (req: Request, res: Response) => {
@@ -131,13 +195,20 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
         const body = lerCorpo(req.body);
         const semestre = lerSemestre(body.semestre, SEMESTRE_PADRAO);
         const persistir = lerBooleanoOpcional(body.persistir, "persistir") ?? true;
-        const resultado = await alocador.gerarAlocacao({
+        const opcoesGeracao = {
             semestre,
             persistir,
             limiteNos: lerInteiroOpcional(body.limiteNos, "limiteNos", 1, LIMITE_NOS_MAXIMO_API),
             semSalas: lerListaDeTextosOpcional(body.semSalas, "semSalas"),
             preservarDefinitivas: lerBooleanoOpcional(body.preservarDefinitivas, "preservarDefinitivas") ?? true,
-        });
+        };
+        const assincrono = lerBooleanoOpcional(body.async ?? req.query.async, "async") ?? false;
+        if (assincrono) {
+            const job = fila.enfileirarGeracao(opcoesGeracao, despublicarSeReal);
+            res.status(202).json(job);
+            return;
+        }
+        const resultado = await alocador.gerarAlocacao(opcoesGeracao);
         if (persistir) await despublicarSeReal(semestre);
         res.json(resultado);
     });
