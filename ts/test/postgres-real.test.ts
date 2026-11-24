@@ -94,20 +94,22 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         await pglite.close();
     });
 
-    test("migrations 001 a 004 aplicam e são idempotentes", async () => {
+    test("migrations 001 a 005 aplicam e são idempotentes", async () => {
         const r1 = await m.migrator.executarMigrations();
         assert.deepEqual(r1.map((r) => [r.arquivo, r.status]), [
             ["001_criar_schema_inicial.sql", "aplicada"],
             ["002_integridade_alocacao.sql", "aplicada"],
             ["003_aulas_semanais_e_curso_ia.sql", "aplicada"],
             ["004_auditoria_alocacao.sql", "aplicada"],
+            ["005_campos_espacos_preferencias_publicacao.sql", "aplicada"],
         ]);
         const r2 = await m.migrator.executarMigrations();
         assert.ok(r2.every((r) => r.status === "ja_executada"));
         const restricoes = (await sql<{ conname: string }>("SELECT conname FROM pg_constraint WHERE conname LIKE 'uq_alocacao%' OR conname LIKE 'ck_%' ORDER BY conname")).map((r) => r.conname);
         assert.deepEqual(restricoes, [
-            "ck_alocacao_status", "ck_disciplina_carga_horaria", "ck_professor_turma_carga",
-            "ck_sala_capacidade", "ck_turma_aulas_semanais", "ck_turma_vagas", "uq_alocacao_turma",
+            "ck_alocacao_status", "ck_disciplina_carga_horaria", "ck_professor_carga_max", "ck_professor_turma_carga",
+            "ck_sala_capacidade", "ck_sala_pcs", "ck_sala_status",
+            "ck_turma_aulas_semanais", "ck_turma_vagas", "uq_alocacao_turma",
         ]);
     });
 
@@ -397,9 +399,21 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         assert.equal(alocLida.status, 200);
         assert.ok(alocLida.data.atualizadoEm, "coluna atualizado_em deve ser exposta pela API");
 
-        // Tenta remover EXTERNA_FIXA -> 409
-        const [externa] = await sql<{ id: number }>("SELECT id FROM alocacao WHERE status = 'EXTERNA_FIXA' LIMIT 1");
+        // Tenta remover EXTERNA_FIXA (tanto a alocação quanto a turma dona da reserva) -> 409
+        const [externa] = await sql<{ id: number; id_turma: number }>("SELECT id, id_turma FROM alocacao WHERE status = 'EXTERNA_FIXA' LIMIT 1");
         assert.equal((await req("DELETE", `/api/alocacoes/${externa.id}`)).status, 409);
+        assert.equal((await req("DELETE", `/api/turmas/${externa.id_turma}`)).status, 409);
+
+        // Sobreposição de restrições (SEX-T-56 + SEX-T-5) seguida de remoção de SEX-T-5 limpa todas as ocorrências do slot 5
+        assert.equal((await req("POST", "/api/professores/9990001/restricoes", { horarioIndisponivel: "SEX-T-56" })).status, 201);
+        assert.equal((await req("POST", "/api/professores/9990001/restricoes", { horarioIndisponivel: "SEX-T-5" })).status, 201);
+        assert.equal((await req("DELETE", "/api/professores/9990001/restricoes/SEX-T-5")).status, 204);
+        const pSemSlot5 = await req("GET", "/api/professores/9990001");
+        assert.deepEqual(
+            pSemSlot5.data.indisponibilidades.map((i: { diaSemana: string; turno: string; indiceHorario: string }) =>
+                `${i.diaSemana}-${i.turno}-${i.indiceHorario}`),
+            ["SEG-M-1", "SEX-T-6"],
+        );
 
         // Remove alocação criada e limpa entidades CRUD
         assert.equal((await req("DELETE", `/api/alocacoes/${alocId}`)).status, 204);
@@ -407,13 +421,80 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         assert.equal((await req("DELETE", "/api/professores/9990001")).status, 204);
         assert.equal((await req("DELETE", "/api/disciplinas/CRUD001")).status, 204);
         assert.equal((await req("DELETE", `/api/salas/${sNova.data.id}`)).status, 204);
+
+        // 6. Migration 005: status/metadados de sala (Manutenção sai do motor e do validador),
+        //    PUT /api/professores/:siape/disponibilidade (preferencial) e POST /api/alocacoes/publicar
+        const sManut = await req("POST", "/api/salas", {
+            nome: "Lab Manutenção", capacidade: 45, tipoEspaco: "Laboratório", bloco: "IC",
+            alocavelIc: true, status: "Disponível", pcs: 45, equipamentos: ["Projetor", "Ar"], observacao: "Teste 005",
+        });
+        assert.equal(sManut.status, 201);
+        assert.equal(sManut.data.pcs, 45);
+        assert.deepEqual(sManut.data.equipamentos, ["Projetor", "Ar"]);
+        assert.equal(sManut.data.observacao, "Teste 005");
+
+        const patchManut = await req("PATCH", `/api/salas/${sManut.data.id}/status`, { status: "Manutenção" });
+        assert.equal(patchManut.status, 200);
+        assert.equal(patchManut.data.status, "Manutenção");
+
+        // Sala em manutenção não entra no pool de listarAlocaveisPeloIc() e é bloqueada pelo validador
+        const alocaveis = await new m.repos.SalaRepository().listarAlocaveisPeloIc();
+        assert.equal(alocaveis.some((s) => s.id === sManut.data.id), false);
+        const tComp = await idTurma("COMP360", "01");
+        const valManut = await req("POST", "/api/alocacoes/validar", { turmaId: tComp, salaId: sManut.data.id });
+        assert.equal(valManut.status, 200);
+        assert.equal(valManut.data.valida, false);
+        assert.ok(valManut.data.violacoes.some((v: { regra: string }) => v.regra === "MANUTENCAO"));
+        assert.equal((await req("DELETE", `/api/salas/${sManut.data.id}`)).status, 204);
+
+        // Disponibilidade docente: preferencial -> indisponivel -> disponivel + regime/cargaMax + PATCH /api/turmas/:id/motor
+        const pRegime = await req("PUT", "/api/professores/2024389", { regime: "DE", cargaMax: 16 });
+        assert.equal(pRegime.status, 200);
+        assert.equal(pRegime.data.regime, "DE");
+        assert.equal(pRegime.data.cargaMax, 16);
+
+        const tMotor = await req("PATCH", `/api/turmas/${tComp}/motor`, { permitirMudarFormato: true });
+        assert.equal(tMotor.status, 200);
+        assert.equal(tMotor.data.permitirMudarFormato, true);
+
+        const prefRes = await req("PUT", "/api/professores/2024389/disponibilidade", {
+            horario: "SEG-M-1", estado: "preferencial",
+        });
+        assert.equal(prefRes.status, 200);
+        assert.ok(prefRes.data.preferencias.some((p: { diaSemana: string; turno: string; indiceHorario: string }) =>
+            `${p.diaSemana}-${p.turno}-${p.indiceHorario}` === "SEG-M-1"));
+        const dispRes = await req("PUT", "/api/professores/2024389/disponibilidade", {
+            horario: "SEG-M-1", estado: "disponivel",
+        });
+        assert.equal(dispRes.status, 200);
+        assert.equal(dispRes.data.preferencias.length, 0);
+
+        // Publicar semestre congela RASCUNHO -> DEFINITIVA e grava publicada = true
+        const pubAntes = await req("GET", "/api/alocacoes/publicacao?semestre=2026.2");
+        assert.equal(pubAntes.data.publicada, false);
+        const pub = await req("POST", "/api/alocacoes/publicar", { semestre: "2026.2" });
+        assert.equal(pub.status, 200);
+        assert.equal(pub.data.publicada, true);
+        assert.ok(pub.data.congeladas > 0);
+        assert.deepEqual(await contarStatus(), { DEFINITIVA: 86, EXTERNA_FIXA: 2 });
+        const pubDepois = await req("GET", "/api/alocacoes/publicacao?semestre=2026.2");
+        assert.equal(pubDepois.data.publicada, true);
+
+        // Se uma sala ocupada entra em Manutenção, o semestre deixa de ser reportado como publicado
+        // e tentar republicar com conflito ativo responde 409
+        const [salaOcupada] = await sql<{ id_sala: number }>("SELECT id_sala FROM alocacao WHERE status = 'DEFINITIVA' LIMIT 1");
+        assert.equal((await req("PATCH", `/api/salas/${salaOcupada.id_sala}/status`, { status: "Manutenção" })).status, 200);
+        const pubComConflito = await req("GET", "/api/alocacoes/publicacao?semestre=2026.2");
+        assert.equal(pubComConflito.data.publicada, false, "grade com sala ocupada em manutenção não pode continuar publicada");
+        assert.equal((await req("POST", "/api/alocacoes/publicar", { semestre: "2026.2" })).status, 409);
+        assert.equal((await req("PATCH", `/api/salas/${salaOcupada.id_sala}/status`, { status: "Disponível" })).status, 200);
     });
 
     test("migration 002 sobre banco com alocações duplicadas mantém só a mais recente", async () => {
         // Simula um banco criado só com a 001 e com duplicatas antigas
         await m.migrator.resetarBanco();
         const r = await m.migrator.executarMigrations();
-        assert.equal(r.length, 4);
+        assert.equal(r.length, 5);
         await m.conn.query("DELETE FROM _migrations WHERE nome = '002_integridade_alocacao.sql'");
         await m.conn.query(`
             ALTER TABLE alocacao DROP CONSTRAINT uq_alocacao_turma;

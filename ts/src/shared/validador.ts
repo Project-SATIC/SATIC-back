@@ -19,11 +19,11 @@
  *    não muda horários.
  */
 import { haSobreposicao, obterConjuntoSlots, slotsDaIndisponibilidade } from "./horario-sigaa.ts";
-import { isLaboratorio, mesmaSala, mesmaTurma, numeroAlunos } from "./tipos.ts";
+import { isLaboratorio, isSalaDisponivel, mesmaSala, mesmaTurma, numeroAlunos } from "./tipos.ts";
 import { verificarFormatoHorario } from "./grade.ts";
 import type { Alocacao, Sala, Turma } from "./tipos.ts";
 
-export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO" | "FORMATO" | "TURNO" | "EXTERNA_FIXA";
+export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO" | "MANUTENCAO" | "FORMATO" | "TURNO" | "EXTERNA_FIXA";
 
 export interface Violacao {
     regra: CodigoRegra;
@@ -103,6 +103,11 @@ export function verificarEscopoEspacial(turma: Turma | null | undefined, sala: S
     return !turma.requerAlocacaoIc || sala.alocavelIc;
 }
 
+/** Espaço em manutenção não pode receber nem manter alocações ativas. */
+export function verificarDisponibilidadeSala(sala: Sala | null | undefined): boolean {
+    return isSalaDisponivel(sala);
+}
+
 /** Todas as restrições rígidas de uma vez. */
 export function isAlocacaoValida(
     turma: Turma,
@@ -110,7 +115,8 @@ export function isAlocacaoValida(
     alocacoesAtuais: readonly Alocacao[],
     horario: string = turma.horarioSigaa,
 ): boolean {
-    return verificarCapacidade(turma, sala)
+    return verificarDisponibilidadeSala(sala)
+        && verificarCapacidade(turma, sala)
         && verificarRequisitoLab(turma, sala)
         && verificarEscopoEspacial(turma, sala)
         && verificarIndisponibilidade(turma, horario)
@@ -126,6 +132,9 @@ export function diagnosticarViolacoes(
     horario: string = turma.horarioSigaa,
 ): Violacao[] {
     const v: Violacao[] = [];
+    if (!verificarDisponibilidadeSala(sala)) {
+        v.push({ regra: "MANUTENCAO", mensagem: `Espaço indisponível: ${sala.nome} está em ${(sala.status || "manutenção").toLowerCase()}.` });
+    }
     if (!verificarCapacidade(turma, sala)) {
         v.push({ regra: "RN-03", mensagem: `RN-03 Lotação: turma com ${numeroAlunos(turma)} alunos excede capacidade de ${sala.nome} (${sala.capacidade} lugares).` });
     }

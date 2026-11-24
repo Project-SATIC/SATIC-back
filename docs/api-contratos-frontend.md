@@ -514,6 +514,37 @@ const { RELOGIO_AULAS, CURSOS, montarHorarioSigaa, blocosDoHorario } = await imp
 
 ---
 
+## 3.1. Endpoints CRUD de Cadastros e Publicação (Migrations 004 e 005)
+
+### Salas e Espaços (`/api/salas`)
+* **`POST /api/salas`** (`201`): cria espaço com `{ nome, capacidade, tipoEspaco, bloco, alocavelIc?, status?: "Disponível" | "Manutenção", pcs?, equipamentos?: string[], observacao? }`.
+* **`PUT /api/salas/:id`** (`200`): atualiza parcial ou totalmente os campos do espaço.
+* **`PATCH /api/salas/:id/status`** (`200`): `{ "status": "Disponível" | "Manutenção" }`. Salas em `"Manutenção"` saem automaticamente do pool do motor (`StateSpaceSearch` e `sugestoes`) e geram violação `"MANUTENCAO"` no validador.
+* **`DELETE /api/salas/:id`** (`204`): remove o espaço.
+
+### Disciplinas (`/api/disciplinas`)
+* **`GET /api/disciplinas/:codigo`** (`200`), **`POST /api/disciplinas`** (`201`), **`PUT /api/disciplinas/:codigo`** (`200`), **`DELETE /api/disciplinas/:codigo`** (`204`).
+
+### Professores, Indisponibilidades e Preferências (`/api/professores`)
+* **`GET /api/professores/:siape`** (`200`): retorna `{ matriculaSiape, nome, regime, cargaMax, indisponibilidades, preferencias }`.
+* **`POST /api/professores`** (`201`) e **`PUT /api/professores/:siape`** (`200`): criam/atualizam `nome`, `regime`, `cargaMax`, `indisponibilidades` e `preferencias`.
+* **`DELETE /api/professores/:siape`** (`204`): remove o docente.
+* **`PUT /api/professores/:siape/disponibilidade`** (`200`): `{ "horario": "SEG-M-1", "estado": "disponivel" | "preferencial" | "indisponivel" }` — sincroniza de forma atômica `restricoes_horario` (RN-02) e `preferencias_horario` (bônus de pontuação no motor de sugestões), dividindo automaticamente janelas agrupadas (ex.: `SEX-T-56`).
+* **`POST /api/professores/:siape/restricoes`** (`201`), **`DELETE /api/professores/:siape/restricoes/:horario`** (`204`), **`POST /api/professores/:siape/preferencias`** (`201`), **`DELETE /api/professores/:siape/preferencias/:horario`** (`204`).
+
+### Turmas (`/api/turmas`)
+* **`POST /api/turmas`** (`201`) e **`PUT /api/turmas/:id`** (`200`): criam/atualizam turma (`codigoTurma`, `semestre`, `cursosOfertados`, `vagas`, `matriculados`, `requerAlocacaoIc`, `horarioSigaa`, `aulasSemanais`, `permitirMudarFormato`, `professores`).
+* **`PATCH /api/turmas/:id/motor`** (`200`): `{ "permitirMudarFormato": true | false }` — persiste no banco a permissão para o motor de sugestões alterar o formato dos blocos da turma.
+* **`DELETE /api/turmas/:id`** (`204`): remove a turma.
+
+### Alocações Individuais e Publicação Oficial (`/api/alocacoes`)
+* **`GET /api/alocacoes/:id`** (`200`): retorna a alocação (incluindo `atualizadoEm` mantido pela trigger da migration `004`).
+* **`DELETE /api/alocacoes/:id`** (`204` / `409` se `EXTERNA_FIXA`): remove a alocação protegendo reservas externas.
+* **`GET /api/alocacoes/publicacao?semestre=2026.2`** (`200`): retorna `{ semestre, publicada, publicadoEm }`.
+* **`POST /api/alocacoes/publicar`** (`200` / `409` se houver conflitos ou pendências): `{ "semestre": "2026.2" }` — valida que não há conflitos nem pendências, congela todas as alocações `RASCUNHO` como `DEFINITIVA` e marca o semestre como publicado (`publicada: true`). Qualquer alteração posterior na grade desmarca automaticamente `publicada`.
+
+---
+
 ## 4. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade

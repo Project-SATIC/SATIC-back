@@ -6,7 +6,7 @@ import {
 import { bloquearSemestre, comTransacao, executorPadrao, type Executor, type ExecutorTransacional } from "../db/connection.ts";
 import { lerHorarioOpcional, lerId, lerStatusOpcional } from "../entrada.ts";
 import { ErroNaoEncontrado, ErroRequisicao } from "../erros.ts";
-import { diagnosticarViolacoes, ordenarSalasSoftConstraint, verificarCapacidade, verificarRequisitoLab, type Violacao } from "../shared/validador.ts";
+import { diagnosticarViolacoes, ordenarSalasSoftConstraint, verificarCapacidade, verificarDisponibilidadeSala, verificarRequisitoLab, type Violacao } from "../shared/validador.ts";
 import { mesmaTurma, numeroAlunos } from "../shared/tipos.ts";
 import type { Alocacao, Sala, StatusAlocacao, Turma } from "../shared/tipos.ts";
 
@@ -367,7 +367,7 @@ export class RemanejamentoService {
 
         const pool = turma.requerAlocacaoIc ? await this.#salaRepo.listarAlocaveisPeloIc(db) : await this.#salaRepo.listarTodas(db);
         const candidatas = pool
-            .filter((s) => verificarCapacidade(turma, s) && verificarRequisitoLab(turma, s))
+            .filter((s) => verificarDisponibilidadeSala(s) && verificarCapacidade(turma, s) && verificarRequisitoLab(turma, s))
             .sort(ordenarSalasSoftConstraint(turma));
         for (const sala of candidatas) {
             const violacoes = diagnosticarViolacoes(turma, sala, alocacoes, horario);

@@ -1,7 +1,13 @@
-import { comTransacao, executorPadrao, type Executor } from "../connection.ts";
+import { bloquearSemestre, comTransacao, executorPadrao, type Executor } from "../connection.ts";
 import { ErroConflito } from "../../erros.ts";
-import type { Alocacao, Sala, StatusAlocacao, Turma } from "../../shared/tipos.ts";
+import type { Alocacao, Sala, StatusAlocacao, StatusSala, Turma } from "../../shared/tipos.ts";
 import { COLUNAS_TURMA, carregarDocentesDasTurmas, mapearTurma, type TurmaRow } from "./turma.repository.ts";
+
+export interface PublicacaoSemestre {
+    semestre: string;
+    publicada: boolean;
+    publicadoEm: string | null;
+}
 
 interface AlocacaoRow extends TurmaRow {
     a_id: number;
@@ -15,6 +21,10 @@ interface AlocacaoRow extends TurmaRow {
     s_tipo: string;
     s_bloco: string;
     s_alocavel: boolean;
+    s_status?: string | null;
+    s_pcs?: number | null;
+    s_equip?: string[] | null;
+    s_obs?: string | null;
 }
 
 const SELECT_ALOCACOES = `
@@ -22,6 +32,7 @@ const SELECT_ALOCACOES = `
            a.data_geracao AS a_data, a.atualizado_em AS a_atualizado,
            s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
            s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
+           s.status AS s_status, s.pcs AS s_pcs, s.equipamentos AS s_equip, s.observacao AS s_obs,
            ${COLUNAS_TURMA}
     FROM alocacao a
     JOIN sala s ON a.id_sala = s.id
@@ -94,12 +105,17 @@ export class AlocacaoRepository {
 
     /**
      * Remove uma alocação por id, bloqueando com HTTP 409 a exclusão de reservas EXTERNA_FIXA.
+     * Também desmarca `publicada` do semestre correspondente na mesma transação.
      * Devolve false se o id não existir.
      */
     async deletarProtegido(id: number, db?: Executor): Promise<boolean> {
         const executar = async (exec: Executor): Promise<boolean> => {
-            const res = await exec.query<{ status: string }>(
-                "SELECT status FROM alocacao WHERE id = $1 FOR UPDATE;",
+            const res = await exec.query<{ status: string; semestre?: string | null }>(
+                `SELECT a.status, t.semestre
+                 FROM alocacao a
+                 LEFT JOIN turma t ON t.id = a.id_turma
+                 WHERE a.id = $1
+                 FOR UPDATE OF a;`,
                 [id],
             );
             if (res.rows.length === 0) return false;
@@ -107,7 +123,11 @@ export class AlocacaoRepository {
                 throw new ErroConflito("Reserva EXTERNA_FIXA de outro instituto não pode ser removida pela secretaria");
             }
             const del = await exec.query("DELETE FROM alocacao WHERE id = $1;", [id]);
-            return (del.rowCount ?? 0) > 0;
+            const removeu = (del.rowCount ?? 0) > 0;
+            if (removeu && res.rows[0].semestre) {
+                await this.definirPublicacaoSemestre(res.rows[0].semestre, false, exec).catch(() => undefined);
+            }
+            return removeu;
         };
         return db ? executar(db) : comTransacao(executar);
     }
@@ -169,19 +189,85 @@ export class AlocacaoRepository {
         `, [turmaId, salaId, horario]);
     }
 
+    /** Consulta se a grade do semestre está publicada. */
+    async obterPublicacaoSemestre(semestre: string, db: Executor = executorPadrao): Promise<PublicacaoSemestre> {
+        const res = await db.query<{ semestre: string; publicada: boolean; publicado_em: Date | string | null }>(
+            "SELECT semestre, publicada, publicado_em FROM semestre_publicacao WHERE semestre = $1;",
+            [semestre],
+        );
+        if (res.rows.length === 0) {
+            return { semestre, publicada: false, publicadoEm: null };
+        }
+        return {
+            semestre: res.rows[0].semestre,
+            publicada: Boolean(res.rows[0].publicada),
+            publicadoEm: res.rows[0].publicado_em != null ? paraIso(res.rows[0].publicado_em) : null,
+        };
+    }
+
+    /** Atualiza o flag de publicação do semestre (ex.: despublicar ao alterar a grade). */
+    async definirPublicacaoSemestre(
+        semestre: string,
+        publicada: boolean,
+        db: Executor = executorPadrao,
+    ): Promise<PublicacaoSemestre> {
+        const res = await db.query<{ semestre: string; publicada: boolean; publicado_em: Date | string | null }>(`
+            INSERT INTO semestre_publicacao (semestre, publicada, publicado_em)
+            VALUES ($1, $2, CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END)
+            ON CONFLICT (semestre) DO UPDATE
+            SET publicada = EXCLUDED.publicada,
+                publicado_em = CASE WHEN EXCLUDED.publicada THEN CURRENT_TIMESTAMP ELSE semestre_publicacao.publicado_em END
+            RETURNING semestre, publicada, publicado_em;
+        `, [semestre, publicada]);
+        return {
+            semestre: res.rows[0].semestre,
+            publicada: Boolean(res.rows[0].publicada),
+            publicadoEm: res.rows[0].publicado_em != null ? paraIso(res.rows[0].publicado_em) : null,
+        };
+    }
+
+    /**
+     * Congela todos os RASCUNHO do semestre como DEFINITIVA e grava `publicada = TRUE` em `semestre_publicacao`.
+     */
+    async publicarSemestre(
+        semestre: string,
+        db?: Executor,
+    ): Promise<PublicacaoSemestre & { congeladas: number }> {
+        const executar = async (exec: Executor): Promise<PublicacaoSemestre & { congeladas: number }> => {
+            await bloquearSemestre(exec, semestre);
+            const congeladasRes = await exec.query(`
+                UPDATE alocacao
+                SET status = 'DEFINITIVA'
+                WHERE status = 'RASCUNHO'
+                  AND id_turma IN (SELECT id FROM turma WHERE semestre = $1);
+            `, [semestre]);
+            const pub = await this.definirPublicacaoSemestre(semestre, true, exec);
+            return { ...pub, congeladas: congeladasRes.rowCount ?? 0 };
+        };
+        return db ? executar(db) : comTransacao(executar);
+    }
+
     async #mapear(rows: AlocacaoRow[], db: Executor): Promise<Alocacao[]> {
         // Hidrata docentes e indisponibilidades: o validador precisa deles para RN-01/RN-02
         const docentes = await carregarDocentesDasTurmas(rows.map((r) => r.t_id), db);
         const turmas = new Map<number, Turma>();
 
         return rows.map((r) => {
+            const cap = Number(r.s_cap);
+            const tipo = r.s_tipo;
+            const alocavel = Boolean(r.s_alocavel);
+            const statusSala: StatusSala = r.s_status === "Manutenção" ? "Manutenção" : "Disponível";
             const sala: Sala = {
                 id: Number(r.s_id),
                 nome: r.s_nome,
-                capacidade: Number(r.s_cap),
-                tipoEspaco: r.s_tipo,
+                capacidade: cap,
+                tipoEspaco: tipo,
                 bloco: r.s_bloco,
-                alocavelIc: Boolean(r.s_alocavel),
+                alocavelIc: alocavel,
+                status: statusSala,
+                pcs: r.s_pcs != null ? Number(r.s_pcs) : (tipo.toLowerCase().startsWith("laborat") ? cap : 0),
+                equipamentos: Array.isArray(r.s_equip) ? r.s_equip.map(String) : [],
+                observacao: r.s_obs != null ? r.s_obs : (alocavel ? "Pool de salas do IC." : "Fora do pool do IC (CTEC/IF)."),
             };
             const idTurma = Number(r.t_id);
             let turma = turmas.get(idTurma);

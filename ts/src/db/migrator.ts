@@ -74,6 +74,8 @@ export async function resetarBanco(): Promise<void> {
         DROP TABLE IF EXISTS alocacao CASCADE;
         DROP TABLE IF EXISTS professor_turma CASCADE;
         DROP TABLE IF EXISTS restricoes_horario CASCADE;
+        DROP TABLE IF EXISTS preferencias_horario CASCADE;
+        DROP TABLE IF EXISTS semestre_publicacao CASCADE;
         DROP TABLE IF EXISTS turma CASCADE;
         DROP TABLE IF EXISTS disciplina CASCADE;
         DROP TABLE IF EXISTS sala CASCADE;

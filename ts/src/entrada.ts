@@ -4,9 +4,16 @@
  */
 import { ErroRequisicao } from "./erros.ts";
 import { FormatoHorarioInvalidoError, obterConjuntoSlots } from "./shared/horario-sigaa.ts";
-import type { StatusAlocacao } from "./shared/tipos.ts";
+import type { StatusAlocacao, StatusSala } from "./shared/tipos.ts";
+import type { EstadoDisponibilidadeDocente } from "./db/repositories/professor.repository.ts";
 
 export const STATUS_ALOCACAO: readonly StatusAlocacao[] = Object.freeze(["RASCUNHO", "DEFINITIVA", "EXTERNA_FIXA"]);
+export const STATUS_SALA: readonly StatusSala[] = Object.freeze(["Disponível", "Manutenção"]);
+export const ESTADOS_DISPONIBILIDADE: readonly EstadoDisponibilidadeDocente[] = Object.freeze([
+    "disponivel",
+    "preferencial",
+    "indisponivel",
+]);
 
 const SEMESTRE_PATTERN = /^\d{4}\.[12]$/;
 const MAX_INT4 = 2_147_483_647;
@@ -68,6 +75,21 @@ export function lerStatusOpcional(valor: unknown): StatusAlocacao | undefined {
         throw new ErroRequisicao(`status inválido: use um de ${STATUS_ALOCACAO.join(", ")}`);
     }
     return valor as StatusAlocacao;
+}
+
+export function lerStatusSalaOpcional(valor: unknown): StatusSala | undefined {
+    if (valor == null || valor === "") return undefined;
+    if (typeof valor !== "string" || !STATUS_SALA.includes(valor as StatusSala)) {
+        throw new ErroRequisicao(`status da sala inválido: use um de ${STATUS_SALA.join(", ")}`);
+    }
+    return valor as StatusSala;
+}
+
+export function lerEstadoDisponibilidadeObrigatorio(valor: unknown): EstadoDisponibilidadeDocente {
+    if (typeof valor !== "string" || !ESTADOS_DISPONIBILIDADE.includes(valor as EstadoDisponibilidadeDocente)) {
+        throw new ErroRequisicao(`estado inválido: use um de ${ESTADOS_DISPONIBILIDADE.join(", ")}`);
+    }
+    return valor as EstadoDisponibilidadeDocente;
 }
 
 export function lerBooleanoOpcional(valor: unknown, campo: string): boolean | undefined {
@@ -152,10 +174,10 @@ export function lerVinculosDocentesOpcional(
         let siape: string;
         let cargaHoraria: number | undefined;
         if (typeof item === "string") {
-            siape = lerTextoObrigatorio(item, `${campo}[${i}]`, 50);
+            siape = lerTextoObrigatorio(item, `${campo}[${i}]`, 20);
         } else if (item && typeof item === "object" && !Array.isArray(item)) {
             const obj = item as Record<string, unknown>;
-            siape = lerTextoObrigatorio(obj.matriculaSiape, `${campo}[${i}].matriculaSiape`, 50);
+            siape = lerTextoObrigatorio(obj.matriculaSiape, `${campo}[${i}].matriculaSiape`, 20);
             cargaHoraria = lerInteiroOpcional(obj.cargaHoraria, `${campo}[${i}].cargaHoraria`, 0, 1000);
         } else {
             throw new ErroRequisicao(`${campo}[${i}] deve ser uma string SIAPE ou objeto { matriculaSiape, cargaHoraria? }`);

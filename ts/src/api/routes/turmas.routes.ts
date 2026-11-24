@@ -47,7 +47,7 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
         const disciplinaCodigo = lerTextoObrigatorio(
             body.disciplinaCodigo ?? body.idDisciplina,
             "disciplinaCodigo",
-            30,
+            20,
         ).toUpperCase();
         const horarioSigaa = lerHorarioOpcional(body.horarioSigaa) ?? "";
         const aulasSemanais = body.aulasSemanais === null
@@ -56,7 +56,7 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
 
         const dados: CriarTurmaInput = {
             disciplinaCodigo,
-            codigoTurma: lerTextoObrigatorio(body.codigoTurma, "codigoTurma", 20),
+            codigoTurma: lerTextoObrigatorio(body.codigoTurma, "codigoTurma", 10),
             semestre: lerSemestre(body.semestre),
             cursosOfertados: lerTextoObrigatorio(body.cursosOfertados, "cursosOfertados", 100),
             vagas: lerInteiroObrigatorio(body.vagas, "vagas", 0, 2000),
@@ -64,6 +64,7 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
             requerAlocacaoIc: lerBooleanoOpcional(body.requerAlocacaoIc, "requerAlocacaoIc") ?? true,
             horarioSigaa,
             aulasSemanais,
+            permitirMudarFormato: lerBooleanoOpcional(body.permitirMudarFormato, "permitirMudarFormato") ?? false,
             professores: lerVinculosDocentesOpcional(body.professores, "professores"),
         };
 
@@ -76,7 +77,7 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
         const body = lerCorpo(req.body);
         const dados: AtualizarTurmaInput = {};
 
-        const codigoTurma = lerTextoOpcionalCorpo(body.codigoTurma, "codigoTurma", 20);
+        const codigoTurma = lerTextoOpcionalCorpo(body.codigoTurma, "codigoTurma", 10);
         if (codigoTurma !== undefined) dados.codigoTurma = codigoTurma;
         if (body.semestre !== undefined) dados.semestre = lerSemestre(body.semestre);
         const cursosOfertados = lerTextoOpcionalCorpo(body.cursosOfertados, "cursosOfertados", 100);
@@ -96,6 +97,8 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
                 ? null
                 : lerInteiroOpcional(body.aulasSemanais, "aulasSemanais", 1, 30);
         }
+        const permitirMudarFormato = lerBooleanoOpcional(body.permitirMudarFormato, "permitirMudarFormato");
+        if (permitirMudarFormato !== undefined) dados.permitirMudarFormato = permitirMudarFormato;
         const professores = lerVinculosDocentesOpcional(body.professores, "professores");
         if (professores !== undefined) dados.professores = professores;
 
@@ -104,6 +107,20 @@ export function criarTurmasRouter(repo: RepoTurmasRota = new TurmaRepository()):
         }
 
         const atualizada = await (repo.atualizar ? repo.atualizar(id, dados) : padrao.atualizar(id, dados));
+        if (!atualizada) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
+        res.json(atualizada);
+    });
+
+    router.patch("/:id/motor", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const body = lerCorpo(req.body);
+        const permitirMudarFormato = lerBooleanoOpcional(body.permitirMudarFormato, "permitirMudarFormato");
+        if (permitirMudarFormato === undefined) {
+            throw new ErroRequisicao("permitirMudarFormato é obrigatório e deve ser booleano");
+        }
+        const atualizada = await (repo.atualizar
+            ? repo.atualizar(id, { permitirMudarFormato })
+            : padrao.atualizar(id, { permitirMudarFormato }));
         if (!atualizada) throw new ErroNaoEncontrado(`Turma de id ${id} não encontrada`);
         res.json(atualizada);
     });

@@ -31,7 +31,7 @@ export function criarDisciplinasRouter(repo: RepoDisciplinasRota = new Disciplin
     router.post("/", async (req: Request, res: Response) => {
         const body = lerCorpo(req.body);
         const dados = {
-            codigo: lerTextoObrigatorio(body.codigo, "codigo", 30).toUpperCase(),
+            codigo: lerTextoObrigatorio(body.codigo, "codigo", 20).toUpperCase(),
             nome: lerTextoObrigatorio(body.nome, "nome", 255),
             cargaHoraria: lerInteiroObrigatorio(body.cargaHoraria, "cargaHoraria", 1, 1000),
             exigeLaboratorio: lerBooleanoOpcional(body.exigeLaboratorio, "exigeLaboratorio") ?? false,
@@ -41,7 +41,7 @@ export function criarDisciplinasRouter(repo: RepoDisciplinasRota = new Disciplin
     });
 
     router.put("/:codigo", async (req: Request, res: Response) => {
-        const codigo = lerTextoObrigatorio(req.params.codigo, "codigo", 30).toUpperCase();
+        const codigo = lerTextoObrigatorio(req.params.codigo, "codigo", 20).toUpperCase();
         const body = lerCorpo(req.body);
         const dados: AtualizarDisciplinaInput = {};
 
@@ -62,7 +62,7 @@ export function criarDisciplinasRouter(repo: RepoDisciplinasRota = new Disciplin
     });
 
     router.delete("/:codigo", async (req: Request, res: Response) => {
-        const codigo = lerTextoObrigatorio(req.params.codigo, "codigo", 30).toUpperCase();
+        const codigo = lerTextoObrigatorio(req.params.codigo, "codigo", 20).toUpperCase();
         const removida = await (repo.deletar ? repo.deletar(codigo) : padrao.deletar(codigo));
         if (!removida) throw new ErroNaoEncontrado(`Disciplina '${codigo}' não encontrada`);
         res.status(204).end();

@@ -1,4 +1,5 @@
 import { comTransacao, executorPadrao, type Executor } from "../connection.ts";
+import { ErroConflito } from "../../erros.ts";
 import { obterConjuntoSlots } from "../../shared/horario-sigaa.ts";
 import { contarAulas } from "../../shared/grade.ts";
 import type { Disciplina, Professor, Turma } from "../../shared/tipos.ts";
@@ -14,6 +15,7 @@ export const COLUNAS_TURMA = `
     t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
     t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
     t.horario_sigaa AS t_horario, t.aulas_semanais AS t_aulas,
+    t.permitir_mudar_formato AS t_mudar_formato,
     d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
 `;
 
@@ -29,6 +31,7 @@ export interface TurmaRow {
     t_requer_ic: boolean;
     t_horario: string;
     t_aulas: number | null;
+    t_mudar_formato?: boolean | null;
     d_codigo: string;
     d_nome: string;
     d_ch: number;
@@ -39,8 +42,11 @@ interface ProfessorTurmaRow {
     id_turma: number;
     matricula_siape: string;
     nome_docente: string;
+    regime_docente?: string | null;
+    carga_max_docente?: number | null;
     carga_horaria_professor: number;
     horario_indisponivel: string | null;
+    horario_preferencial?: string | null;
 }
 
 export interface DocentesDaTurma {
@@ -63,6 +69,7 @@ export interface CriarTurmaInput {
     requerAlocacaoIc: boolean;
     horarioSigaa: string;
     aulasSemanais?: number | null;
+    permitirMudarFormato?: boolean;
     professores?: readonly VinculoDocenteInput[];
 }
 
@@ -75,6 +82,7 @@ export interface AtualizarTurmaInput {
     requerAlocacaoIc?: boolean;
     horarioSigaa?: string;
     aulasSemanais?: number | null;
+    permitirMudarFormato?: boolean;
     professores?: readonly VinculoDocenteInput[];
 }
 
@@ -94,13 +102,15 @@ export async function carregarDocentesDasTurmas(
 
     const res = await db.query<ProfessorTurmaRow>(`
         SELECT pt.id_turma, pt.matricula_siape, pt.carga_horaria_professor,
-               p.nome AS nome_docente,
-               rh.horario_indisponivel
+               p.nome AS nome_docente, p.regime AS regime_docente, p.carga_max AS carga_max_docente,
+               rh.horario_indisponivel,
+               pf.horario_preferencial
         FROM professor_turma pt
         JOIN professor p ON pt.matricula_siape = p.matricula_siape
         LEFT JOIN restricoes_horario rh ON p.matricula_siape = rh.matricula_siape
+        LEFT JOIN preferencias_horario pf ON p.matricula_siape = pf.matricula_siape
         WHERE pt.id_turma = ANY($1::int[])
-        ORDER BY pt.id_turma ASC, p.nome COLLATE "C" ASC, rh.horario_indisponivel COLLATE "C" ASC;
+        ORDER BY pt.id_turma ASC, p.nome COLLATE "C" ASC, rh.horario_indisponivel COLLATE "C" ASC, pf.horario_preferencial COLLATE "C" ASC;
     `, [ids]);
 
     const profsPorTurma = new Map<number, Map<string, Professor>>();
@@ -117,7 +127,14 @@ export async function carregarDocentesDasTurmas(
 
         let prof = mapaProfs.get(row.matricula_siape);
         if (!prof) {
-            prof = { matriculaSiape: row.matricula_siape, nome: row.nome_docente, indisponibilidades: [] };
+            prof = {
+                matriculaSiape: row.matricula_siape,
+                nome: row.nome_docente,
+                regime: row.regime_docente ?? null,
+                cargaMax: row.carga_max_docente != null ? Number(row.carga_max_docente) : null,
+                indisponibilidades: [],
+                preferencias: [],
+            };
             mapaProfs.set(row.matricula_siape, prof);
             entrada.professores.push(prof);
         }
@@ -128,6 +145,15 @@ export async function carregarDocentesDasTurmas(
                 (i) => i.diaSemana === ind.diaSemana && i.turno === ind.turno && i.indiceHorario === ind.indiceHorario,
             );
             if (!repetida) prof.indisponibilidades.push(ind);
+        }
+
+        if (row.horario_preferencial) {
+            const pref = parseHorarioIndisponivel(row.matricula_siape, row.horario_preferencial);
+            const prefs = prof.preferencias ?? (prof.preferencias = []);
+            const repetida = prefs.some(
+                (i) => i.diaSemana === pref.diaSemana && i.turno === pref.turno && i.indiceHorario === pref.indiceHorario,
+            );
+            if (!repetida) prefs.push(pref);
         }
 
         entrada.cargaHorariaPorDocente[row.matricula_siape] = Number(row.carga_horaria_professor);
@@ -166,6 +192,7 @@ export function mapearTurma(r: TurmaRow, docentes: Map<number, DocentesDaTurma>)
         horarioSigaa: r.t_horario,
         // Banco antigo (antes da migration 003) ou valor não informado: conta as aulas do horário
         aulasSemanais: r.t_aulas != null ? Number(r.t_aulas) : aulasDoHorarioOuNulo(r.t_horario),
+        permitirMudarFormato: Boolean(r.t_mudar_formato),
         professores: doc ? doc.professores : [],
         cargaHorariaPorDocente: doc ? doc.cargaHorariaPorDocente : {},
     };
@@ -253,8 +280,8 @@ export class TurmaRepository {
             const res = await db.query<{ id: number }>(`
                 INSERT INTO turma (
                     id_disciplina, codigo_turma, semestre, cursos_ofertados,
-                    vagas, matriculados, requer_alocacao_ic, horario_sigaa, aulas_semanais
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    vagas, matriculados, requer_alocacao_ic, horario_sigaa, aulas_semanais, permitir_mudar_formato
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING id;
             `, [
                 dados.disciplinaCodigo,
@@ -266,6 +293,7 @@ export class TurmaRepository {
                 dados.requerAlocacaoIc,
                 dados.horarioSigaa,
                 aulasSemanais,
+                dados.permitirMudarFormato ?? false,
             ]);
             const turmaId = Number(res.rows[0].id);
 
@@ -309,8 +337,9 @@ export class TurmaRepository {
                     matriculados = $5,
                     requer_alocacao_ic = $6,
                     horario_sigaa = $7,
-                    aulas_semanais = $8
-                WHERE id = $9;
+                    aulas_semanais = $8,
+                    permitir_mudar_formato = $9
+                WHERE id = $10;
             `, [
                 dados.codigoTurma ?? atual.codigoTurma,
                 dados.semestre ?? atual.semestre,
@@ -320,6 +349,7 @@ export class TurmaRepository {
                 dados.requerAlocacaoIc ?? atual.requerAlocacaoIc,
                 novoHorario,
                 novasAulas,
+                dados.permitirMudarFormato ?? atual.permitirMudarFormato ?? false,
                 id,
             ]);
 
@@ -331,9 +361,19 @@ export class TurmaRepository {
         });
     }
 
-    async deletar(id: number, db: Executor = executorPadrao): Promise<boolean> {
-        const res = await db.query("DELETE FROM turma WHERE id = $1;", [id]);
-        return (res.rowCount ?? 0) > 0;
+    async deletar(id: number, db?: Executor): Promise<boolean> {
+        const exec = async (tx: Executor): Promise<boolean> => {
+            const aloc = await tx.query<{ status: string }>(
+                "SELECT status FROM alocacao WHERE id_turma = $1 FOR UPDATE;",
+                [id],
+            );
+            if (aloc.rows.some((r) => r.status === "EXTERNA_FIXA")) {
+                throw new ErroConflito("Turma vinculada a uma reserva EXTERNA_FIXA de outro instituto não pode ser removida");
+            }
+            const res = await tx.query("DELETE FROM turma WHERE id = $1;", [id]);
+            return (res.rowCount ?? 0) > 0;
+        };
+        return db ? exec(db) : comTransacao(exec);
     }
 
     async inserirMuitas(turmas: readonly Turma[]): Promise<void> {
