@@ -1,4 +1,5 @@
-import { executorPadrao, type Executor } from "../connection.ts";
+import { comTransacao, executorPadrao, type Executor } from "../connection.ts";
+import { ErroConflito } from "../../erros.ts";
 import type { Alocacao, Sala, StatusAlocacao, Turma } from "../../shared/tipos.ts";
 import { COLUNAS_TURMA, carregarDocentesDasTurmas, mapearTurma, type TurmaRow } from "./turma.repository.ts";
 
@@ -7,6 +8,7 @@ interface AlocacaoRow extends TurmaRow {
     a_horario: string;
     a_status: string;
     a_data: Date | string;
+    a_atualizado?: Date | string | null;
     s_id: number;
     s_nome: string;
     s_cap: number;
@@ -16,7 +18,8 @@ interface AlocacaoRow extends TurmaRow {
 }
 
 const SELECT_ALOCACOES = `
-    SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
+    SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status,
+           a.data_geracao AS a_data, a.atualizado_em AS a_atualizado,
            s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
            s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
            ${COLUNAS_TURMA}
@@ -31,7 +34,7 @@ const ORDEM_ALOCACOES = `ORDER BY a.horario_codigo COLLATE "C" ASC, s.nome COLLA
 const INSERT_ALOCACAO = `
     INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
     VALUES ($1, $2, $3, $4)
-    RETURNING id, data_geracao;
+    RETURNING id, data_geracao, atualizado_em;
 `;
 
 function paraIso(data: Date | string): string {
@@ -47,7 +50,7 @@ function idsObrigatorios(alocacao: Alocacao): { turmaId: number; salaId: number 
 export class AlocacaoRepository {
     async inserir(alocacao: Alocacao, db: Executor = executorPadrao): Promise<Alocacao> {
         const { turmaId, salaId } = idsObrigatorios(alocacao);
-        const res = await db.query<{ id: number; data_geracao: Date }>(INSERT_ALOCACAO, [
+        const res = await db.query<{ id: number; data_geracao: Date; atualizado_em?: Date }>(INSERT_ALOCACAO, [
             turmaId,
             salaId,
             alocacao.horarioCodigo,
@@ -55,6 +58,9 @@ export class AlocacaoRepository {
         ]);
         alocacao.id = Number(res.rows[0].id);
         alocacao.dataGeracao = paraIso(res.rows[0].data_geracao);
+        alocacao.atualizadoEm = res.rows[0].atualizado_em != null
+            ? paraIso(res.rows[0].atualizado_em)
+            : alocacao.dataGeracao;
         return alocacao;
     }
 
@@ -75,10 +81,35 @@ export class AlocacaoRepository {
         return this.#mapear(res.rows, db);
     }
 
+    async buscarPorId(id: number, db: Executor = executorPadrao): Promise<Alocacao | null> {
+        const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} WHERE a.id = $1;`, [id]);
+        return (await this.#mapear(res.rows, db))[0] ?? null;
+    }
+
     /** Alocação da turma (a migration 002 garante no máximo uma por turma). */
     async buscarPorTurmaId(turmaId: number, db: Executor = executorPadrao): Promise<Alocacao | null> {
         const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} WHERE a.id_turma = $1 ORDER BY a.id DESC LIMIT 1;`, [turmaId]);
         return (await this.#mapear(res.rows, db))[0] ?? null;
+    }
+
+    /**
+     * Remove uma alocação por id, bloqueando com HTTP 409 a exclusão de reservas EXTERNA_FIXA.
+     * Devolve false se o id não existir.
+     */
+    async deletarProtegido(id: number, db?: Executor): Promise<boolean> {
+        const executar = async (exec: Executor): Promise<boolean> => {
+            const res = await exec.query<{ status: string }>(
+                "SELECT status FROM alocacao WHERE id = $1 FOR UPDATE;",
+                [id],
+            );
+            if (res.rows.length === 0) return false;
+            if (res.rows[0].status === "EXTERNA_FIXA") {
+                throw new ErroConflito("Reserva EXTERNA_FIXA de outro instituto não pode ser removida pela secretaria");
+            }
+            const del = await exec.query("DELETE FROM alocacao WHERE id = $1;", [id]);
+            return (del.rowCount ?? 0) > 0;
+        };
+        return db ? executar(db) : comTransacao(executar);
     }
 
     async atualizarSalaEHorario(
@@ -158,13 +189,15 @@ export class AlocacaoRepository {
                 turma = mapearTurma(r, docentes);
                 turmas.set(idTurma, turma);
             }
+            const dataIso = paraIso(r.a_data);
             return {
                 id: Number(r.a_id),
                 turma,
                 sala,
                 horarioCodigo: r.a_horario,
                 status: r.a_status as StatusAlocacao,
-                dataGeracao: paraIso(r.a_data),
+                dataGeracao: dataIso,
+                atualizadoEm: r.a_atualizado != null ? paraIso(r.a_atualizado) : dataIso,
             };
         });
     }

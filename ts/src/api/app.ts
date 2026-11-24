@@ -30,8 +30,8 @@ function opcoesCors(): CorsOptions {
 }
 
 const CODIGOS_BANCO_INDISPONIVEL = new Set([
-    "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN",
-    "57P01", "57P03", // admin_shutdown, cannot_connect_now
+    "ECONNREFUSED", "EACCES", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN",
+    "57P01", "57P02", "57P03", // admin_shutdown, crash_shutdown, cannot_connect_now
     "3D000", // banco inexistente
     "28P01", "28000", // falha de autenticação
 ]);

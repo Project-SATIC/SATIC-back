@@ -94,12 +94,13 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         await pglite.close();
     });
 
-    test("migrations 001 a 003 aplicam e são idempotentes", async () => {
+    test("migrations 001 a 004 aplicam e são idempotentes", async () => {
         const r1 = await m.migrator.executarMigrations();
         assert.deepEqual(r1.map((r) => [r.arquivo, r.status]), [
             ["001_criar_schema_inicial.sql", "aplicada"],
             ["002_integridade_alocacao.sql", "aplicada"],
             ["003_aulas_semanais_e_curso_ia.sql", "aplicada"],
+            ["004_auditoria_alocacao.sql", "aplicada"],
         ]);
         const r2 = await m.migrator.executarMigrations();
         assert.ok(r2.every((r) => r.status === "ja_executada"));
@@ -316,11 +317,103 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         assert.equal(process.env.DATABASE_URL, "", "DATABASE_URL vazia impede dotenv de reinjetar .env sobre o PGlite");
     });
 
+    test("CRUD HTTP completo (salas, disciplinas, professores/restrições, turmas, alocações e trigger atualizado_em)", async () => {
+        const req = async (method: string, path: string, body?: unknown) => {
+            const res = await fetch(`${api}${path}`, {
+                method,
+                headers: body !== undefined ? { "content-type": "application/json" } : {},
+                body: body !== undefined ? JSON.stringify(body) : undefined,
+            });
+            const data = res.status === 204 ? null : await res.json();
+            return { status: res.status, data };
+        };
+
+        // 1. Salas: POST 201 -> PUT 200 -> DELETE 204 (e duplicata -> 409)
+        const sNova = await req("POST", "/api/salas", {
+            nome: "Sala CRUD Teste", capacidade: 42, tipoEspaco: "Sala", bloco: "IC", alocavelIc: true,
+        });
+        assert.equal(sNova.status, 201);
+        assert.equal(sNova.data.nome, "Sala CRUD Teste");
+        assert.equal((await req("POST", "/api/salas", {
+            nome: "Sala CRUD Teste", capacidade: 42, tipoEspaco: "Sala", bloco: "IC", alocavelIc: true,
+        })).status, 409);
+        // pglite-socket fecha a sessão após erro 23505; garante reconexão do pool
+        await m.conn.query("SELECT 1").catch(() => undefined);
+
+        const sEdit = await req("PUT", `/api/salas/${sNova.data.id}`, { capacidade: 55, tipoEspaco: "Laboratório" });
+        assert.equal(sEdit.status, 200);
+        assert.equal(sEdit.data.capacidade, 55);
+        assert.equal(sEdit.data.tipoEspaco, "Laboratório");
+
+        // 2. Disciplinas: POST 201 -> PUT 200
+        const dNova = await req("POST", "/api/disciplinas", {
+            codigo: "crud001", nome: "Disciplina CRUD", cargaHoraria: 60, exigeLaboratorio: false,
+        });
+        assert.equal(dNova.status, 201);
+        assert.equal(dNova.data.codigo, "CRUD001");
+        const dEdit = await req("PUT", "/api/disciplinas/CRUD001", { exigeLaboratorio: true });
+        assert.equal(dEdit.status, 200);
+        assert.equal(dEdit.data.exigeLaboratorio, true);
+
+        // 3. Professores + Restrições (incluindo divisão de janela agrupada SEX-T-56 -> remover SEX-T-5 deixa SEX-T-6)
+        const pNovo = await req("POST", "/api/professores", {
+            matriculaSiape: "9990001", nome: "DOCENTE CRUD", indisponibilidades: ["sex-t-56"],
+        });
+        assert.equal(pNovo.status, 201);
+        assert.deepEqual(pNovo.data.indisponibilidades.map((i: { diaSemana: string; turno: string; indiceHorario: string }) =>
+            `${i.diaSemana}-${i.turno}-${i.indiceHorario}`), ["SEX-T-56"]);
+
+        assert.equal((await req("POST", "/api/professores/9990001/restricoes", { horarioIndisponivel: "2m1" })).status, 201);
+        assert.equal((await req("DELETE", "/api/professores/9990001/restricoes/SEX-T-5")).status, 204);
+        const pLido = await req("GET", "/api/professores/9990001");
+        assert.deepEqual(
+            pLido.data.indisponibilidades.map((i: { diaSemana: string; turno: string; indiceHorario: string }) =>
+                `${i.diaSemana}-${i.turno}-${i.indiceHorario}`),
+            ["SEG-M-1", "SEX-T-6"],
+        );
+
+        // 4. Turmas: POST 201 -> PUT 200 (atualizando vagas, matriculados e docentes)
+        const tNova = await req("POST", "/api/turmas", {
+            disciplinaCodigo: "CRUD001", codigoTurma: "01", semestre: "2026.2",
+            cursosOfertados: "CC", vagas: 30, matriculados: 25, requerAlocacaoIc: true,
+            horarioSigaa: "35M12", professores: ["9990001"],
+        });
+        assert.equal(tNova.status, 201);
+        assert.equal(tNova.data.aulasSemanais, 4);
+        assert.equal(tNova.data.professores.length, 1);
+
+        const tEdit = await req("PUT", `/api/turmas/${tNova.data.id}`, { matriculados: 35, professores: [] });
+        assert.equal(tEdit.status, 200);
+        assert.equal(tEdit.data.matriculados, 35);
+        assert.equal(tEdit.data.professores.length, 0);
+
+        // 5. Alocação: GET /:id, trigger atualizado_em e DELETE /:id (com bloqueio 409 em EXTERNA_FIXA)
+        const conf = await req("POST", "/api/alocacoes/confirmar", {
+            turmaId: tNova.data.id, salaId: sNova.data.id, horario: "35M12",
+        });
+        assert.equal(conf.status, 200);
+        const alocId = conf.data.alocacao.id;
+        const alocLida = await req("GET", `/api/alocacoes/${alocId}`);
+        assert.equal(alocLida.status, 200);
+        assert.ok(alocLida.data.atualizadoEm, "coluna atualizado_em deve ser exposta pela API");
+
+        // Tenta remover EXTERNA_FIXA -> 409
+        const [externa] = await sql<{ id: number }>("SELECT id FROM alocacao WHERE status = 'EXTERNA_FIXA' LIMIT 1");
+        assert.equal((await req("DELETE", `/api/alocacoes/${externa.id}`)).status, 409);
+
+        // Remove alocação criada e limpa entidades CRUD
+        assert.equal((await req("DELETE", `/api/alocacoes/${alocId}`)).status, 204);
+        assert.equal((await req("DELETE", `/api/turmas/${tNova.data.id}`)).status, 204);
+        assert.equal((await req("DELETE", "/api/professores/9990001")).status, 204);
+        assert.equal((await req("DELETE", "/api/disciplinas/CRUD001")).status, 204);
+        assert.equal((await req("DELETE", `/api/salas/${sNova.data.id}`)).status, 204);
+    });
+
     test("migration 002 sobre banco com alocações duplicadas mantém só a mais recente", async () => {
         // Simula um banco criado só com a 001 e com duplicatas antigas
         await m.migrator.resetarBanco();
         const r = await m.migrator.executarMigrations();
-        assert.equal(r.length, 3);
+        assert.equal(r.length, 4);
         await m.conn.query("DELETE FROM _migrations WHERE nome = '002_integridade_alocacao.sql'");
         await m.conn.query(`
             ALTER TABLE alocacao DROP CONSTRAINT uq_alocacao_turma;

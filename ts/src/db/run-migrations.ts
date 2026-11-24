@@ -1,11 +1,52 @@
+import "dotenv/config";
+import pg from "pg";
 import { closePool, testConnection } from "./connection.ts";
 import { executarMigrations, resetarBanco } from "./migrator.ts";
+
+const { Client } = pg;
+
+async function tentarCriarBancoSeAusente(): Promise<boolean> {
+    if (process.env.DATABASE_URL) return false;
+    const dbName = process.env.PGDATABASE || "satic";
+    if (!/^[a-zA-Z0-9_]+$/.test(dbName)) return false;
+
+    const admin = new Client({
+        host: process.env.PGHOST || "localhost",
+        port: Number(process.env.PGPORT || 5432),
+        user: process.env.PGUSER || "postgres",
+        password: process.env.PGPASSWORD || "postgres",
+        database: "postgres",
+        connectionTimeoutMillis: 5000,
+    });
+
+    try {
+        await admin.connect();
+        const exists = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1;", [dbName]);
+        if (exists.rowCount === 0) {
+            await admin.query(`CREATE DATABASE "${dbName}";`);
+            console.log(`[SATIC-DB] Banco '${dbName}' criado automaticamente.`);
+            return true;
+        }
+        return false;
+    } catch {
+        return false;
+    } finally {
+        await admin.end().catch(() => {});
+    }
+}
 
 async function main(): Promise<void> {
     const isReset = process.argv.includes("--reset");
 
     console.log("[SATIC-DB] Testando conexão com PostgreSQL...");
-    const conn = await testConnection();
+    let conn = await testConnection();
+    if (!conn.ok && conn.message && /não existe o banco de dados|does not exist/i.test(conn.message)) {
+        await closePool();
+        if (await tentarCriarBancoSeAusente()) {
+            conn = await testConnection();
+        }
+    }
+
     if (!conn.ok) {
         console.error("[SATIC-DB] Não foi possível conectar ao PostgreSQL:");
         console.error(`          ${conn.message}`);

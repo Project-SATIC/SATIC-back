@@ -109,3 +109,61 @@ export function lerCorpo(body: unknown): Record<string, unknown> {
     }
     return body as Record<string, unknown>;
 }
+
+/** Texto obrigatório não vazio no corpo JSON. */
+export function lerTextoObrigatorio(valor: unknown, campo: string, maxLen = 255): string {
+    if (typeof valor !== "string" || valor.trim() === "") {
+        throw new ErroRequisicao(`${campo} é obrigatório e deve ser um texto não vazio`);
+    }
+    const limpo = valor.trim();
+    if (limpo.length > maxLen) {
+        throw new ErroRequisicao(`${campo} muito longo (máximo ${maxLen} caracteres)`);
+    }
+    return limpo;
+}
+
+/** Texto opcional no corpo JSON: undefined quando ausente; erro 400 se vazio ou tipo inválido. */
+export function lerTextoOpcionalCorpo(valor: unknown, campo: string, maxLen = 255): string | undefined {
+    if (valor === undefined) return undefined;
+    return lerTextoObrigatorio(valor, campo, maxLen);
+}
+
+/** Inteiro obrigatório dentro de [min, max]. */
+export function lerInteiroObrigatorio(valor: unknown, campo: string, min: number, max = MAX_INT4): number {
+    if (typeof valor !== "number" || !Number.isSafeInteger(valor) || valor < min || valor > max) {
+        throw new ErroRequisicao(`${campo} é obrigatório e deve ser um inteiro entre ${min} e ${max}`);
+    }
+    return valor;
+}
+
+/** Lista de docentes (strings SIAPE ou `{ matriculaSiape, cargaHoraria? }`). */
+export function lerVinculosDocentesOpcional(
+    valor: unknown,
+    campo: string,
+): Array<{ matriculaSiape: string; cargaHoraria?: number }> | undefined {
+    if (valor === undefined) return undefined;
+    if (!Array.isArray(valor)) {
+        throw new ErroRequisicao(`${campo} deve ser uma lista de matrículas SIAPE ou objetos { matriculaSiape, cargaHoraria? }`);
+    }
+    const vistos = new Set<string>();
+    const resultado: Array<{ matriculaSiape: string; cargaHoraria?: number }> = [];
+    for (let i = 0; i < valor.length; i++) {
+        const item = valor[i];
+        let siape: string;
+        let cargaHoraria: number | undefined;
+        if (typeof item === "string") {
+            siape = lerTextoObrigatorio(item, `${campo}[${i}]`, 50);
+        } else if (item && typeof item === "object" && !Array.isArray(item)) {
+            const obj = item as Record<string, unknown>;
+            siape = lerTextoObrigatorio(obj.matriculaSiape, `${campo}[${i}].matriculaSiape`, 50);
+            cargaHoraria = lerInteiroOpcional(obj.cargaHoraria, `${campo}[${i}].cargaHoraria`, 0, 1000);
+        } else {
+            throw new ErroRequisicao(`${campo}[${i}] deve ser uma string SIAPE ou objeto { matriculaSiape, cargaHoraria? }`);
+        }
+        if (!vistos.has(siape)) {
+            vistos.add(siape);
+            resultado.push(cargaHoraria !== undefined ? { matriculaSiape: siape, cargaHoraria } : { matriculaSiape: siape });
+        }
+    }
+    return resultado;
+}

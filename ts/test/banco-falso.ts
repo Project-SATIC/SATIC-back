@@ -89,11 +89,16 @@ export class BancoFalso implements Executor {
         if (s.startsWith("SELECT a.id AS a_id")) {
             let linhas = [...this.alocacoes];
             if (s.includes("WHERE t.semestre = $1")) linhas = linhas.filter((a) => this.#turma(a.turmaId).semestre === p[0]);
+            else if (s.includes("WHERE a.id = $1")) linhas = linhas.filter((a) => a.id === Number(p[0]));
             else if (s.includes("WHERE a.id_turma = $1")) linhas = linhas.filter((a) => a.turmaId === Number(p[0])).sort((a, b) => b.id - a.id).slice(0, 1);
-            if (!s.includes("WHERE a.id_turma")) {
+            if (!s.includes("WHERE a.id_turma") && !s.includes("WHERE a.id = $1")) {
                 linhas.sort((a, b) => bin(a.horario, b.horario) || bin(this.#sala(a.salaId).nome, this.#sala(b.salaId).nome) || a.id - b.id);
             }
             return linhas.map((a) => this.#linhaAlocacao(a));
+        }
+        if (s.startsWith("SELECT status FROM alocacao WHERE id = $1")) {
+            const a = this.alocacoes.find((x) => x.id === Number(p[0]));
+            return a ? [{ status: a.status }] : [];
         }
         if (s.includes("FROM turma t JOIN disciplina d")) {
             let turmas = [...this.turmas];
@@ -112,7 +117,7 @@ export class BancoFalso implements Executor {
         if (s.startsWith("INSERT INTO alocacao")) {
             const status = (s.includes("'EXTERNA_FIXA'") ? "EXTERNA_FIXA" : p[3]) as StatusAlocacao;
             const linha = this.inserirAlocacao(Number(p[0]), Number(p[1]), String(p[2]), status);
-            return [{ id: linha.id, data_geracao: linha.data }];
+            return [{ id: linha.id, data_geracao: linha.data, atualizado_em: linha.data }];
         }
         if (s.startsWith("UPDATE alocacao")) {
             const a = this.alocacoes.find((x) => x.id === Number(p[3]));
@@ -121,6 +126,11 @@ export class BancoFalso implements Executor {
             a.horario = String(p[1]);
             if (p[2] != null) a.status = p[2] as StatusAlocacao;
             return [{}];
+        }
+        if (s.startsWith("DELETE FROM alocacao WHERE id = $1")) {
+            const removidas = this.alocacoes.filter((a) => a.id === Number(p[0]));
+            for (const r of removidas) this.alocacoes.splice(this.alocacoes.indexOf(r), 1);
+            return removidas.map(() => ({}));
         }
         if (s.startsWith("DELETE FROM alocacao WHERE id_turma = $1")) {
             const removidas = this.alocacoes.filter((a) => a.turmaId === Number(p[0]));
@@ -160,7 +170,7 @@ export class BancoFalso implements Executor {
     #linhaAlocacao(a: LinhaAlocacao): Record<string, unknown> {
         const sala = this.#sala(a.salaId);
         return {
-            a_id: a.id, a_horario: a.horario, a_status: a.status, a_data: a.data,
+            a_id: a.id, a_horario: a.horario, a_status: a.status, a_data: a.data, a_atualizado: a.data,
             s_id: sala.id, s_nome: sala.nome, s_cap: sala.capacidade, s_tipo: sala.tipoEspaco, s_bloco: sala.bloco, s_alocavel: sala.alocavelIc,
             ...this.#linhaTurma(this.#turma(a.turmaId)),
         };

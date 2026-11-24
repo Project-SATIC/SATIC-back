@@ -48,6 +48,36 @@ export interface DocentesDaTurma {
     cargaHorariaPorDocente: Record<string, number>;
 }
 
+export interface VinculoDocenteInput {
+    matriculaSiape: string;
+    cargaHoraria?: number;
+}
+
+export interface CriarTurmaInput {
+    disciplinaCodigo: string;
+    codigoTurma: string;
+    semestre: string;
+    cursosOfertados: string;
+    vagas: number;
+    matriculados: number;
+    requerAlocacaoIc: boolean;
+    horarioSigaa: string;
+    aulasSemanais?: number | null;
+    professores?: readonly VinculoDocenteInput[];
+}
+
+export interface AtualizarTurmaInput {
+    codigoTurma?: string;
+    semestre?: string;
+    cursosOfertados?: string;
+    vagas?: number;
+    matriculados?: number;
+    requerAlocacaoIc?: boolean;
+    horarioSigaa?: string;
+    aulasSemanais?: number | null;
+    professores?: readonly VinculoDocenteInput[];
+}
+
 /**
  * Hidratação em lote dos docentes (co-docência N:M) e de suas indisponibilidades (RN-02)
  * para várias turmas numa única consulta, evitando N+1 queries.
@@ -141,6 +171,25 @@ export function mapearTurma(r: TurmaRow, docentes: Map<number, DocentesDaTurma>)
     };
 }
 
+async function substituirVinculosDocentes(
+    turmaId: number,
+    vinculos: readonly VinculoDocenteInput[],
+    cargaPadrao: number,
+    db: Executor,
+): Promise<void> {
+    await db.query("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId]);
+    const sqlVinculo = `
+        INSERT INTO professor_turma (matricula_siape, id_turma, carga_horaria_professor)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (matricula_siape, id_turma) DO UPDATE
+        SET carga_horaria_professor = EXCLUDED.carga_horaria_professor;
+    `;
+    for (const v of vinculos) {
+        const carga = v.cargaHoraria ?? cargaPadrao;
+        await db.query(sqlVinculo, [v.matriculaSiape, turmaId, carga]);
+    }
+}
+
 export class TurmaRepository {
     async inserir(turma: Turma): Promise<Turma> {
         // Falha cedo com mensagem clara em vez de gravar um horário que o motor não sabe ler
@@ -179,23 +228,112 @@ export class TurmaRepository {
             turma.aulasSemanais = aulasSemanais;
             turma.id = turmaId;
 
-            // Atualiza vínculos com professores
-            await db.query("DELETE FROM professor_turma WHERE id_turma = $1;", [turmaId]);
-
-            const sqlVinculo = `
-                INSERT INTO professor_turma (matricula_siape, id_turma, carga_horaria_professor)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (matricula_siape, id_turma) DO UPDATE
-                SET carga_horaria_professor = EXCLUDED.carga_horaria_professor;
-            `;
-
-            for (const prof of turma.professores) {
-                const carga = turma.cargaHorariaPorDocente?.[prof.matriculaSiape] ?? turma.disciplina.cargaHoraria;
-                await db.query(sqlVinculo, [prof.matriculaSiape, turmaId, carga]);
-            }
+            await substituirVinculosDocentes(
+                turmaId,
+                turma.professores.map((p) => ({
+                    matriculaSiape: p.matriculaSiape,
+                    cargaHoraria: turma.cargaHorariaPorDocente?.[p.matriculaSiape],
+                })),
+                turma.disciplina.cargaHoraria,
+                db,
+            );
 
             return turma;
         });
+    }
+
+    /** Cria uma nova turma sem sobrescrever (duplicata de chave natural dispara 23505 -> HTTP 409). */
+    async criar(dados: CriarTurmaInput): Promise<Turma> {
+        const aulasNoHorario = dados.horarioSigaa ? obterConjuntoSlots(dados.horarioSigaa).size : 0;
+        const aulasSemanais = dados.aulasSemanais !== undefined
+            ? dados.aulasSemanais
+            : (aulasNoHorario > 0 ? aulasNoHorario : null);
+
+        return comTransacao(async (db) => {
+            const res = await db.query<{ id: number }>(`
+                INSERT INTO turma (
+                    id_disciplina, codigo_turma, semestre, cursos_ofertados,
+                    vagas, matriculados, requer_alocacao_ic, horario_sigaa, aulas_semanais
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING id;
+            `, [
+                dados.disciplinaCodigo,
+                dados.codigoTurma,
+                dados.semestre,
+                dados.cursosOfertados,
+                dados.vagas,
+                dados.matriculados,
+                dados.requerAlocacaoIc,
+                dados.horarioSigaa,
+                aulasSemanais,
+            ]);
+            const turmaId = Number(res.rows[0].id);
+
+            if (dados.professores && dados.professores.length > 0) {
+                const discRes = await db.query<{ carga_horaria: number }>(
+                    "SELECT carga_horaria FROM disciplina WHERE codigo = $1;",
+                    [dados.disciplinaCodigo],
+                );
+                const cargaPadrao = Number(discRes.rows[0]?.carga_horaria ?? 60);
+                await substituirVinculosDocentes(turmaId, dados.professores, cargaPadrao, db);
+            }
+
+            const criada = await this.buscarPorId(turmaId, db);
+            if (!criada) throw new Error(`Turma ${turmaId} não encontrada após inserção`);
+            return criada;
+        });
+    }
+
+    async atualizar(id: number, dados: AtualizarTurmaInput): Promise<Turma | null> {
+        if (dados.horarioSigaa !== undefined && dados.horarioSigaa !== "") {
+            obterConjuntoSlots(dados.horarioSigaa);
+        }
+
+        return comTransacao(async (db) => {
+            const atual = await this.buscarPorId(id, db);
+            if (!atual) return null;
+
+            const novoHorario = dados.horarioSigaa ?? atual.horarioSigaa;
+            const novasAulas = dados.aulasSemanais !== undefined
+                ? dados.aulasSemanais
+                : (dados.horarioSigaa !== undefined && dados.horarioSigaa !== ""
+                    ? aulasDoHorarioOuNulo(dados.horarioSigaa)
+                    : atual.aulasSemanais ?? null);
+
+            await db.query(`
+                UPDATE turma
+                SET codigo_turma = $1,
+                    semestre = $2,
+                    cursos_ofertados = $3,
+                    vagas = $4,
+                    matriculados = $5,
+                    requer_alocacao_ic = $6,
+                    horario_sigaa = $7,
+                    aulas_semanais = $8
+                WHERE id = $9;
+            `, [
+                dados.codigoTurma ?? atual.codigoTurma,
+                dados.semestre ?? atual.semestre,
+                dados.cursosOfertados ?? atual.cursosOfertados,
+                dados.vagas ?? atual.vagas,
+                dados.matriculados ?? atual.matriculados,
+                dados.requerAlocacaoIc ?? atual.requerAlocacaoIc,
+                novoHorario,
+                novasAulas,
+                id,
+            ]);
+
+            if (dados.professores !== undefined) {
+                await substituirVinculosDocentes(id, dados.professores, atual.disciplina.cargaHoraria, db);
+            }
+
+            return this.buscarPorId(id, db);
+        });
+    }
+
+    async deletar(id: number, db: Executor = executorPadrao): Promise<boolean> {
+        const res = await db.query("DELETE FROM turma WHERE id = $1;", [id]);
+        return (res.rowCount ?? 0) > 0;
     }
 
     async inserirMuitas(turmas: readonly Turma[]): Promise<void> {

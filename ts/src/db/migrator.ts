@@ -69,7 +69,7 @@ export async function executarMigrations(): Promise<MigrationResult[]> {
 }
 
 export async function resetarBanco(): Promise<void> {
-    console.log("[Migrations] Limpando todas as tabelas do SATIC...");
+    console.log("[Migrations] Limpando todas as tabelas e funções do SATIC...");
     await query(`
         DROP TABLE IF EXISTS alocacao CASCADE;
         DROP TABLE IF EXISTS professor_turma CASCADE;
@@ -79,6 +79,7 @@ export async function resetarBanco(): Promise<void> {
         DROP TABLE IF EXISTS sala CASCADE;
         DROP TABLE IF EXISTS professor CASCADE;
         DROP TABLE IF EXISTS _migrations CASCADE;
+        DROP FUNCTION IF EXISTS satic_atualizar_alocacao_timestamp() CASCADE;
     `);
     console.log("[Migrations] Banco resetado.");
 }

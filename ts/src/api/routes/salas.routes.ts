@@ -1,11 +1,22 @@
 import { Router, type Request, type Response } from "express";
-import { SalaRepository } from "../../db/repositories/index.ts";
-import { lerBooleanoOpcional, lerId, lerTextoOpcionalQuery } from "../../entrada.ts";
-import { ErroNaoEncontrado } from "../../erros.ts";
+import { SalaRepository, type AtualizarSalaInput, type CriarSalaInput } from "../../db/repositories/sala.repository.ts";
+import {
+    lerBooleanoOpcional,
+    lerCorpo,
+    lerId,
+    lerInteiroObrigatorio,
+    lerInteiroOpcional,
+    lerTextoObrigatorio,
+    lerTextoOpcionalCorpo,
+    lerTextoOpcionalQuery,
+} from "../../entrada.ts";
+import { ErroNaoEncontrado, ErroRequisicao } from "../../erros.ts";
 
-export type RepoSalasRota = Pick<SalaRepository, "listarTodas" | "buscarPorId">;
+export type RepoSalasRota = Pick<SalaRepository, "listarTodas" | "buscarPorId">
+    & Partial<Pick<SalaRepository, "criar" | "atualizar" | "deletar">>;
 
 export function criarSalasRouter(repo: RepoSalasRota = new SalaRepository()): Router {
+    const padrao = repo instanceof SalaRepository ? repo : new SalaRepository();
     const router = Router();
 
     router.get("/", async (req: Request, res: Response) => {
@@ -25,17 +36,52 @@ export function criarSalasRouter(repo: RepoSalasRota = new SalaRepository()): Ro
         res.json(sala);
     });
 
+    router.post("/", async (req: Request, res: Response) => {
+        const body = lerCorpo(req.body);
+        const dados: CriarSalaInput = {
+            nome: lerTextoObrigatorio(body.nome, "nome", 100),
+            capacidade: lerInteiroObrigatorio(body.capacidade, "capacidade", 1, 10_000),
+            tipoEspaco: lerTextoObrigatorio(body.tipoEspaco, "tipoEspaco", 50),
+            bloco: lerTextoObrigatorio(body.bloco, "bloco", 50),
+            alocavelIc: lerBooleanoOpcional(body.alocavelIc, "alocavelIc") ?? true,
+        };
+        const criada = await (repo.criar ? repo.criar(dados) : padrao.criar(dados));
+        res.status(201).json(criada);
+    });
+
+    router.put("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const body = lerCorpo(req.body);
+        const dados: AtualizarSalaInput = {};
+
+        const nome = lerTextoOpcionalCorpo(body.nome, "nome", 100);
+        if (nome !== undefined) dados.nome = nome;
+        const capacidade = lerInteiroOpcional(body.capacidade, "capacidade", 1, 10_000);
+        if (capacidade !== undefined) dados.capacidade = capacidade;
+        const tipoEspaco = lerTextoOpcionalCorpo(body.tipoEspaco, "tipoEspaco", 50);
+        if (tipoEspaco !== undefined) dados.tipoEspaco = tipoEspaco;
+        const bloco = lerTextoOpcionalCorpo(body.bloco, "bloco", 50);
+        if (bloco !== undefined) dados.bloco = bloco;
+        const alocavelIc = lerBooleanoOpcional(body.alocavelIc, "alocavelIc");
+        if (alocavelIc !== undefined) dados.alocavelIc = alocavelIc;
+
+        if (Object.keys(dados).length === 0) {
+            throw new ErroRequisicao("Informe ao menos um campo para atualizar a sala");
+        }
+
+        const atualizada = await (repo.atualizar ? repo.atualizar(id, dados) : padrao.atualizar(id, dados));
+        if (!atualizada) throw new ErroNaoEncontrado(`Sala de id ${id} não encontrada`);
+        res.json(atualizada);
+    });
+
+    router.delete("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const removida = await (repo.deletar ? repo.deletar(id) : padrao.deletar(id));
+        if (!removida) throw new ErroNaoEncontrado(`Sala de id ${id} não encontrada`);
+        res.status(204).end();
+    });
+
     return router;
 }
 
 export const salasRouter = criarSalasRouter();
-
-// -------------------------------------------------------------------------------------------------
-// Rotas reservadas (ainda não implementadas). Hoje o front faz isso só na sessão do navegador.
-//
-// POST   /api/salas          cadastro de espaço (nome, capacidade, tipo, bloco, alocavelIc, pcs, equipamentos)
-// PUT    /api/salas/:id      edição do espaço
-// PATCH  /api/salas/:id/status   { status: "Disponível" | "Manutenção" }
-//   Espaço em manutenção sai do pool do motor e do validador. Exige coluna `status` na tabela sala
-//   (e talvez `pcs`, `equipamentos`, `pavimento`, `observacao`, que o front já mostra).
-// -------------------------------------------------------------------------------------------------

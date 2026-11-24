@@ -8,18 +8,21 @@ import { LIMITE_NOS_SUGESTOES } from "../../motor/sugestoes.ts";
 import {
     lerBooleanoOpcional,
     lerCorpo,
+    lerId,
     lerInteiroOpcional,
     lerListaDeIdsOpcional,
     lerListaDeTextosOpcional,
     lerSemestre,
     lerSemestreOpcionalQuery,
 } from "../../entrada.ts";
+import { ErroNaoEncontrado } from "../../erros.ts";
 
 /** Teto do limite de nós aceito pela API (2x o padrão do motor) para uma requisição não travar o servidor. */
 export const LIMITE_NOS_MAXIMO_API = MAX_NOS_BUSCA * 2;
 
 export interface ServicosAlocacao {
-    alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">;
+    alocacaoRepo: Pick<AlocacaoRepository, "listarPorSemestre" | "listarTodas">
+        & Partial<Pick<AlocacaoRepository, "buscarPorId" | "deletarProtegido">>;
     alocador: Pick<AlocadorService, "gerarAlocacao">;
     remanejamento: Pick<RemanejamentoService, "validar" | "confirmar" | "confirmarLote">;
     sugestoes: Pick<SugestoesService, "sugerir" | "conflitos">;
@@ -57,6 +60,24 @@ export function criarAlocacoesRouter(servicos: Partial<ServicosAlocacao> = {}): 
     router.get("/", async (req: Request, res: Response) => {
         const semestre = lerSemestreOpcionalQuery(req.query.semestre);
         res.json(semestre ? await alocacaoRepo.listarPorSemestre(semestre) : await alocacaoRepo.listarTodas());
+    });
+
+    router.get("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const repoPadrao = alocacaoRepo instanceof AlocacaoRepository ? alocacaoRepo : new AlocacaoRepository();
+        const alocacao = await (alocacaoRepo.buscarPorId ? alocacaoRepo.buscarPorId(id) : repoPadrao.buscarPorId(id));
+        if (!alocacao) throw new ErroNaoEncontrado(`Alocação de id ${id} não encontrada`);
+        res.json(alocacao);
+    });
+
+    router.delete("/:id", async (req: Request, res: Response) => {
+        const id = lerId(req.params.id, "id");
+        const repoPadrao = alocacaoRepo instanceof AlocacaoRepository ? alocacaoRepo : new AlocacaoRepository();
+        const removida = await (alocacaoRepo.deletarProtegido
+            ? alocacaoRepo.deletarProtegido(id)
+            : repoPadrao.deletarProtegido(id));
+        if (!removida) throw new ErroNaoEncontrado(`Alocação de id ${id} não encontrada`);
+        res.status(204).end();
     });
 
     router.post("/gerar", async (req: Request, res: Response) => {
