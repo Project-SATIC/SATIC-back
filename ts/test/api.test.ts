@@ -1,7 +1,8 @@
-import test, { describe } from "node:test";
+import test, { after, describe } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { criarApp } from "../src/api/app.ts";
+import { closePool } from "../src/db/connection.ts";
 
 interface MockResponse {
     status: number;
@@ -47,7 +48,10 @@ function simularRequisicao(
 }
 
 describe("API Express - Rotas e Middlewares", () => {
-    const app = criarApp();
+    const app = criarApp({
+        testConnection: async () => ({ ok: true, message: "Conectado ao banco 'satic'" }),
+    });
+    after(() => closePool());
 
     test("GET / retorna metadados da API e lista de rotas", async () => {
         const res = await simularRequisicao(app, "GET", "/");
@@ -58,12 +62,19 @@ describe("API Express - Rotas e Middlewares", () => {
         assert.ok(res.body.documentacao.rotas.includes("/api/salas"));
     });
 
-    test("GET /api/health responde com status do serviço e diagnóstico do banco", async () => {
-        const res = await simularRequisicao(app, "GET", "/api/health");
-        assert.equal(res.status, 200);
-        assert.equal(res.body.status, "ok");
-        assert.ok(res.body.database != null);
-        assert.equal(typeof res.body.database.conectado, "boolean");
+    test("GET /api/health responde 200 com banco ok e 503 com banco indisponível", async () => {
+        const okRes = await simularRequisicao(app, "GET", "/api/health");
+        assert.equal(okRes.status, 200);
+        assert.equal(okRes.body.status, "ok");
+        assert.equal(okRes.body.database.conectado, true);
+
+        const appDegradado = criarApp({
+            testConnection: async () => ({ ok: false, message: "connect ECONNREFUSED" }),
+        });
+        const failRes = await simularRequisicao(appDegradado, "GET", "/api/health");
+        assert.equal(failRes.status, 503);
+        assert.equal(failRes.body.status, "degradado");
+        assert.equal(failRes.body.database.conectado, false);
     });
 
     test("GET /rota-inexistente responde 404 estruturado", async () => {

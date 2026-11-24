@@ -1,173 +1,178 @@
-import { getClient, query } from "../connection.ts";
-import type { Alocacao, Disciplina, Sala, StatusAlocacao, Turma } from "../../shared/tipos.ts";
+import { comTransacao, executorPadrao, type Executor } from "../connection.ts";
+import { ErroConflito } from "../../erros.ts";
+import type { Alocacao, Sala, StatusAlocacao, Turma } from "../../shared/tipos.ts";
+import { COLUNAS_TURMA, carregarDocentesDasTurmas, mapearTurma, type TurmaRow } from "./turma.repository.ts";
 
-interface AlocacaoRow {
+interface AlocacaoRow extends TurmaRow {
     a_id: number;
     a_horario: string;
     a_status: string;
     a_data: Date | string;
+    a_atualizado?: Date | string | null;
     s_id: number;
     s_nome: string;
     s_cap: number;
     s_tipo: string;
     s_bloco: string;
     s_alocavel: boolean;
-    t_id: number;
-    t_codigo: string;
-    t_semestre: string;
-    t_cursos: string;
-    t_vagas: number;
-    t_matriculados: number;
-    t_requer_ic: boolean;
-    t_horario: string;
-    d_codigo: string;
-    d_nome: string;
-    d_ch: number;
-    d_lab: boolean;
+}
+
+const SELECT_ALOCACOES = `
+    SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status,
+           a.data_geracao AS a_data, a.atualizado_em AS a_atualizado,
+           s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
+           s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
+           ${COLUNAS_TURMA}
+    FROM alocacao a
+    JOIN sala s ON a.id_sala = s.id
+    JOIN turma t ON a.id_turma = t.id
+    JOIN disciplina d ON t.id_disciplina = d.codigo
+`;
+
+const ORDEM_ALOCACOES = `ORDER BY a.horario_codigo COLLATE "C" ASC, s.nome COLLATE "C" ASC, a.id ASC`;
+
+const INSERT_ALOCACAO = `
+    INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
+    VALUES ($1, $2, $3, $4)
+    RETURNING id, data_geracao, atualizado_em;
+`;
+
+function paraIso(data: Date | string): string {
+    return data instanceof Date ? data.toISOString() : String(data);
+}
+
+function idsObrigatorios(alocacao: Alocacao): { turmaId: number; salaId: number } {
+    if (!alocacao.turma?.id) throw new Error(`Turma ${alocacao.turma?.disciplina?.codigo ?? "?"}-${alocacao.turma?.codigoTurma ?? "?"} sem id não pode ser alocada`);
+    if (!alocacao.sala?.id) throw new Error(`Sala '${alocacao.sala?.nome ?? "?"}' sem id não pode receber alocação`);
+    return { turmaId: alocacao.turma.id, salaId: alocacao.sala.id };
 }
 
 export class AlocacaoRepository {
-    async inserir(alocacao: Alocacao): Promise<Alocacao> {
-        if (!alocacao.turma.id) throw new Error("Turma deve possuir id para ser alocada");
-        if (!alocacao.sala.id) throw new Error("Sala deve possuir id para ser alocada");
-
-        const sql = `
-            INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, data_geracao;
-        `;
-        const res = await query<{ id: number; data_geracao: Date }>(sql, [
-            alocacao.turma.id,
-            alocacao.sala.id,
+    async inserir(alocacao: Alocacao, db: Executor = executorPadrao): Promise<Alocacao> {
+        const { turmaId, salaId } = idsObrigatorios(alocacao);
+        const res = await db.query<{ id: number; data_geracao: Date; atualizado_em?: Date }>(INSERT_ALOCACAO, [
+            turmaId,
+            salaId,
             alocacao.horarioCodigo,
             alocacao.status || "RASCUNHO",
         ]);
-
-        alocacao.id = res.rows[0].id;
-        alocacao.dataGeracao = res.rows[0].data_geracao.toISOString();
+        alocacao.id = Number(res.rows[0].id);
+        alocacao.dataGeracao = paraIso(res.rows[0].data_geracao);
+        alocacao.atualizadoEm = res.rows[0].atualizado_em != null
+            ? paraIso(res.rows[0].atualizado_em)
+            : alocacao.dataGeracao;
         return alocacao;
     }
 
-    async inserirMuitas(alocacoes: readonly Alocacao[]): Promise<void> {
-        const client = await getClient();
-        try {
-            await client.query("BEGIN;");
-            const sql = `
-                INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id;
-            `;
-            for (const aloc of alocacoes) {
-                if (!aloc.turma.id || !aloc.sala.id) continue;
-                const res = await client.query<{ id: number }>(sql, [
-                    aloc.turma.id,
-                    aloc.sala.id,
-                    aloc.horarioCodigo,
-                    aloc.status || "RASCUNHO",
-                ]);
-                aloc.id = res.rows[0].id;
-            }
-            await client.query("COMMIT;");
-        } catch (err) {
-            await client.query("ROLLBACK;");
-            throw err;
-        } finally {
-            client.release();
+    /** Insere várias alocações no executor informado (use dentro de uma transação). Falha se faltar id. */
+    async inserirMuitas(alocacoes: readonly Alocacao[], db: Executor = executorPadrao): Promise<void> {
+        for (const aloc of alocacoes) {
+            await this.inserir(aloc, db);
         }
     }
 
-    async listarTodas(): Promise<Alocacao[]> {
-        const sql = `
-            SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
-                   s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
-                   s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
-                   t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
-                   t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
-                   t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
-                   t.horario_sigaa AS t_horario,
-                   d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
-            FROM alocacao a
-            JOIN sala s ON a.id_sala = s.id
-            JOIN turma t ON a.id_turma = t.id
-            JOIN disciplina d ON t.id_disciplina = d.codigo
-            ORDER BY a.horario_codigo ASC, s.nome ASC;
-        `;
-        const res = await query<AlocacaoRow>(sql);
-        return this.mapearAlocacoes(res.rows);
+    async listarTodas(db: Executor = executorPadrao): Promise<Alocacao[]> {
+        const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} ${ORDEM_ALOCACOES};`);
+        return this.#mapear(res.rows, db);
     }
 
-    async listarPorSemestre(semestre: string): Promise<Alocacao[]> {
-        const sql = `
-            SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
-                   s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
-                   s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
-                   t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
-                   t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
-                   t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
-                   t.horario_sigaa AS t_horario,
-                   d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
-            FROM alocacao a
-            JOIN sala s ON a.id_sala = s.id
-            JOIN turma t ON a.id_turma = t.id
-            JOIN disciplina d ON t.id_disciplina = d.codigo
-            WHERE t.semestre = $1
-            ORDER BY a.horario_codigo ASC, s.nome ASC;
-        `;
-        const res = await query<AlocacaoRow>(sql, [semestre]);
-        return this.mapearAlocacoes(res.rows);
+    async listarPorSemestre(semestre: string, db: Executor = executorPadrao): Promise<Alocacao[]> {
+        const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} WHERE t.semestre = $1 ${ORDEM_ALOCACOES};`, [semestre]);
+        return this.#mapear(res.rows, db);
     }
 
-    async buscarPorTurmaId(turmaId: number): Promise<Alocacao | null> {
-        const sql = `
-            SELECT a.id AS a_id, a.horario_codigo AS a_horario, a.status AS a_status, a.data_geracao AS a_data,
-                   s.id AS s_id, s.nome AS s_nome, s.capacidade AS s_cap,
-                   s.tipo_espaco AS s_tipo, s.bloco AS s_bloco, s.alocavel_ic AS s_alocavel,
-                   t.id AS t_id, t.codigo_turma AS t_codigo, t.semestre AS t_semestre,
-                   t.cursos_ofertados AS t_cursos, t.vagas AS t_vagas,
-                   t.matriculados AS t_matriculados, t.requer_alocacao_ic AS t_requer_ic,
-                   t.horario_sigaa AS t_horario,
-                   d.codigo AS d_codigo, d.nome AS d_nome, d.carga_horaria AS d_ch, d.exige_laboratorio AS d_lab
-            FROM alocacao a
-            JOIN sala s ON a.id_sala = s.id
-            JOIN turma t ON a.id_turma = t.id
-            JOIN disciplina d ON t.id_disciplina = d.codigo
-            WHERE a.id_turma = $1
-            ORDER BY a.id DESC
-            LIMIT 1;
-        `;
-        const res = await query<AlocacaoRow>(sql, [turmaId]);
-        if (res.rows.length === 0) return null;
-        return this.mapearAlocacoes(res.rows)[0] || null;
+    async buscarPorId(id: number, db: Executor = executorPadrao): Promise<Alocacao | null> {
+        const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} WHERE a.id = $1;`, [id]);
+        return (await this.#mapear(res.rows, db))[0] ?? null;
+    }
+
+    /** Alocação da turma (a migration 002 garante no máximo uma por turma). */
+    async buscarPorTurmaId(turmaId: number, db: Executor = executorPadrao): Promise<Alocacao | null> {
+        const res = await db.query<AlocacaoRow>(`${SELECT_ALOCACOES} WHERE a.id_turma = $1 ORDER BY a.id DESC LIMIT 1;`, [turmaId]);
+        return (await this.#mapear(res.rows, db))[0] ?? null;
+    }
+
+    /**
+     * Remove uma alocação por id, bloqueando com HTTP 409 a exclusão de reservas EXTERNA_FIXA.
+     * Devolve false se o id não existir.
+     */
+    async deletarProtegido(id: number, db?: Executor): Promise<boolean> {
+        const executar = async (exec: Executor): Promise<boolean> => {
+            const res = await exec.query<{ status: string }>(
+                "SELECT status FROM alocacao WHERE id = $1 FOR UPDATE;",
+                [id],
+            );
+            if (res.rows.length === 0) return false;
+            if (res.rows[0].status === "EXTERNA_FIXA") {
+                throw new ErroConflito("Reserva EXTERNA_FIXA de outro instituto não pode ser removida pela secretaria");
+            }
+            const del = await exec.query("DELETE FROM alocacao WHERE id = $1;", [id]);
+            return (del.rowCount ?? 0) > 0;
+        };
+        return db ? executar(db) : comTransacao(executar);
     }
 
     async atualizarSalaEHorario(
         alocacaoId: number,
         novaSalaId: number,
         novoHorario: string,
-        novoStatus?: StatusAlocacao
+        novoStatus?: StatusAlocacao,
+        db: Executor = executorPadrao,
     ): Promise<boolean> {
-        const sql = `
+        const res = await db.query(`
             UPDATE alocacao
             SET id_sala = $1,
                 horario_codigo = $2,
-                status = COALESCE($3, status)
+                status = COALESCE($3, status),
+                data_geracao = CURRENT_TIMESTAMP
             WHERE id = $4;
-        `;
-        const res = await query(sql, [novaSalaId, novoHorario, novoStatus || null, alocacaoId]);
+        `, [novaSalaId, novoHorario, novoStatus || null, alocacaoId]);
         return (res.rowCount ?? 0) > 0;
     }
 
-    async limparPorSemestre(semestre: string): Promise<number> {
-        const sql = `
+    /**
+     * Remove as alocações do semestre com os status informados.
+     * Por padrão apaga só RASCUNHO: reservas EXTERNA_FIXA e remanejamentos DEFINITIVA são preservados.
+     */
+    async limparPorSemestre(
+        semestre: string,
+        status: readonly StatusAlocacao[] = ["RASCUNHO"],
+        db: Executor = executorPadrao,
+    ): Promise<number> {
+        if (status.length === 0) return 0;
+        const res = await db.query(`
             DELETE FROM alocacao
-            WHERE id_turma IN (SELECT id FROM turma WHERE semestre = $1);
-        `;
-        const res = await query(sql, [semestre]);
+            WHERE status = ANY($2::text[])
+              AND id_turma IN (SELECT id FROM turma WHERE semestre = $1);
+        `, [semestre, [...status]]);
         return res.rowCount ?? 0;
     }
 
-    private mapearAlocacoes(rows: AlocacaoRow[]): Alocacao[] {
-        const cacheTurmas = new Map<number, Turma>();
+    /** Tira a turma da grade (ela volta a ser pendente). Devolve quantas alocações foram removidas. */
+    async removerPorTurmaId(turmaId: number, db: Executor = executorPadrao): Promise<number> {
+        const res = await db.query("DELETE FROM alocacao WHERE id_turma = $1;", [turmaId]);
+        return res.rowCount ?? 0;
+    }
+
+    /**
+     * Grava (ou atualiza) a reserva EXTERNA_FIXA de uma turma de outro instituto numa sala do pool do IC.
+     * Idempotente: rodar o seed de novo não duplica a reserva.
+     */
+    async registrarReservaExterna(turmaId: number, salaId: number, horario: string, db: Executor = executorPadrao): Promise<void> {
+        await db.query(`
+            INSERT INTO alocacao (id_turma, id_sala, horario_codigo, status)
+            VALUES ($1, $2, $3, 'EXTERNA_FIXA')
+            ON CONFLICT (id_turma) DO UPDATE
+            SET id_sala = EXCLUDED.id_sala,
+                horario_codigo = EXCLUDED.horario_codigo,
+                status = 'EXTERNA_FIXA';
+        `, [turmaId, salaId, horario]);
+    }
+
+    async #mapear(rows: AlocacaoRow[], db: Executor): Promise<Alocacao[]> {
+        // Hidrata docentes e indisponibilidades: o validador precisa deles para RN-01/RN-02
+        const docentes = await carregarDocentesDasTurmas(rows.map((r) => r.t_id), db);
+        const turmas = new Map<number, Turma>();
 
         return rows.map((r) => {
             const sala: Sala = {
@@ -178,39 +183,21 @@ export class AlocacaoRepository {
                 bloco: r.s_bloco,
                 alocavelIc: Boolean(r.s_alocavel),
             };
-
-            let turma = cacheTurmas.get(r.t_id);
+            const idTurma = Number(r.t_id);
+            let turma = turmas.get(idTurma);
             if (!turma) {
-                const disc: Disciplina = {
-                    codigo: r.d_codigo,
-                    nome: r.d_nome,
-                    cargaHoraria: Number(r.d_ch),
-                    exigeLaboratorio: Boolean(r.d_lab),
-                };
-
-                turma = {
-                    id: Number(r.t_id),
-                    disciplina: disc,
-                    codigoTurma: r.t_codigo,
-                    semestre: r.t_semestre,
-                    cursosOfertados: r.t_cursos,
-                    vagas: Number(r.t_vagas),
-                    matriculados: Number(r.t_matriculados),
-                    requerAlocacaoIc: Boolean(r.t_requer_ic),
-                    horarioSigaa: r.t_horario,
-                    professores: [],
-                    cargaHorariaPorDocente: {},
-                };
-                cacheTurmas.set(r.t_id, turma);
+                turma = mapearTurma(r, docentes);
+                turmas.set(idTurma, turma);
             }
-
+            const dataIso = paraIso(r.a_data);
             return {
                 id: Number(r.a_id),
                 turma,
                 sala,
                 horarioCodigo: r.a_horario,
                 status: r.a_status as StatusAlocacao,
-                dataGeracao: r.a_data instanceof Date ? r.a_data.toISOString() : String(r.a_data),
+                dataGeracao: dataIso,
+                atualizadoEm: r.a_atualizado != null ? paraIso(r.a_atualizado) : dataIso,
             };
         });
     }

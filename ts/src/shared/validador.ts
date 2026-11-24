@@ -14,12 +14,16 @@
  *  - Nova checagem de escopo espacial (verificarEscopoEspacial), recomendada na seção 4.2
  *    do ANALISE_PROJETO.md para chamadas diretas pela API.
  *  - O diagnóstico devolve objetos { regra, mensagem } em vez de strings.
+ *  - O diagnóstico inclui as regras de formato do horário (FORMATO: nº de aulas e um bloco por dia;
+ *    TURNO: turnos do curso), definidas em grade.ts. O motor de salas não usa essas regras, porque
+ *    não muda horários.
  */
 import { haSobreposicao, obterConjuntoSlots, slotsDaIndisponibilidade } from "./horario-sigaa.ts";
 import { isLaboratorio, mesmaSala, mesmaTurma, numeroAlunos } from "./tipos.ts";
+import { verificarFormatoHorario } from "./grade.ts";
 import type { Alocacao, Sala, Turma } from "./tipos.ts";
 
-export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO";
+export type CodigoRegra = "RN-01" | "RN-02" | "RN-03" | "RN-04" | "SALA" | "ESCOPO" | "FORMATO" | "TURNO" | "EXTERNA_FIXA";
 
 export interface Violacao {
     regra: CodigoRegra;
@@ -140,5 +144,51 @@ export function diagnosticarViolacoes(
     if (!verificarChoqueProfessor(turma, alocacoesAtuais, horario)) {
         v.push({ regra: "RN-01", mensagem: `RN-01 Choque Docente: professor já alocado em outra turma no horário ${horario}.` });
     }
+    for (const p of verificarFormatoHorario(turma, horario)) v.push(p);
     return v;
+}
+
+function cmpBool(a: boolean, b: boolean): number {
+    return a === b ? 0 : a ? 1 : -1;
+}
+
+function cmpNum(a: number, b: number): number {
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Character.toUpperCase/toLowerCase nunca expandem; ignora mapeamentos de vários caracteres (ex: ß). */
+function umCaractere(convertido: string, original: number): number {
+    return convertido.length === 1 ? convertido.charCodeAt(0) : original;
+}
+
+/** String.compareToIgnoreCase do Java (compara caractere a caractere, maiúsculo e depois minúsculo). */
+export function compareToIgnoreCase(a: string, b: string): number {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+        let c1 = a.charCodeAt(i);
+        let c2 = b.charCodeAt(i);
+        if (c1 === c2) continue;
+        c1 = umCaractere(String.fromCharCode(c1).toUpperCase(), c1);
+        c2 = umCaractere(String.fromCharCode(c2).toUpperCase(), c2);
+        if (c1 === c2) continue;
+        c1 = umCaractere(String.fromCharCode(c1).toLowerCase(), c1);
+        c2 = umCaractere(String.fromCharCode(c2).toLowerCase(), c2);
+        if (c1 !== c2) return c1 - c2;
+    }
+    return a.length - b.length;
+}
+
+/** Soft constraint do motor (compartilhada entre motor, remanejamento e front-end). */
+export function ordenarSalasSoftConstraint(turma: Turma): (s1: Sala, s2: Sala) => number {
+    const lab = turma.disciplina != null && turma.disciplina.exigeLaboratorio;
+    return (s1, s2) => {
+        // Turmas teóricas: salas comuns antes de laboratórios
+        if (!lab && isLaboratorio(s1) !== isLaboratorio(s2)) {
+            return cmpBool(isLaboratorio(s1), isLaboratorio(s2));
+        }
+        // Best-Fit: menor sala que comporta a turma primeiro
+        const cap = cmpNum(s1.capacidade, s2.capacidade);
+        if (cap !== 0) return cap;
+        return compareToIgnoreCase(s1.nome, s2.nome);
+    };
 }

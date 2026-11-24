@@ -15,7 +15,12 @@ export const DIAS_SIGAA: Readonly<Record<string, DiaSemana>> = Object.freeze({
 export const TURNOS: readonly Turno[] = Object.freeze(["M", "T", "N"]);
 
 const CACHE_SLOTS = new Map<string, ReadonlySet<string>>();
+const MAX_CACHE_SLOTS = 4096;
 const VAZIO: ReadonlySet<string> = Object.freeze(new Set<string>());
+
+export function tamanhoCacheSlots(): number {
+    return CACHE_SLOTS.size;
+}
 
 export function diaDoCodigoSigaa(codigo: string): DiaSemana {
     const dia = DIAS_SIGAA[codigo];
@@ -43,6 +48,10 @@ export function obterConjuntoSlots(horarioSigaa: string | null | undefined): Rea
         }
     }
     const congelado: ReadonlySet<string> = Object.freeze(slots);
+    if (CACHE_SLOTS.size >= MAX_CACHE_SLOTS) {
+        const maisAntiga = CACHE_SLOTS.keys().next().value;
+        if (maisAntiga !== undefined) CACHE_SLOTS.delete(maisAntiga);
+    }
     CACHE_SLOTS.set(chave, congelado);
     return congelado;
 }
@@ -65,12 +74,14 @@ export function haSobreposicao(horarioA: string | null | undefined, horarioB: st
 /** Expande uma indisponibilidade docente para slots atômicos (IndisponibilidadeDocente.toSlotsAtomicos). */
 export function slotsDaIndisponibilidade(ind: IndisponibilidadeDocente): string[] {
     if (ind.diaSemana == null || ind.turno == null || ind.indiceHorario == null) return [];
-    let dia = ind.diaSemana.trim().toUpperCase();
-    if (dia.length === 1 && dia >= "0" && dia <= "9") dia = diaDoCodigoSigaa(dia);
+    const dia = ind.diaSemana.trim().toUpperCase();
+    const dias = /^[0-9]+$/.test(dia) ? [...dia].map((d) => diaDoCodigoSigaa(d)) : [dia];
     const turno = ind.turno.trim().toUpperCase();
     const slots: string[] = [];
-    for (const c of ind.indiceHorario.trim()) {
-        if (c >= "0" && c <= "9") slots.push(`${dia}-${turno}${c}`);
+    for (const d of dias) {
+        for (const c of ind.indiceHorario.trim()) {
+            if (c >= "0" && c <= "9") slots.push(`${d}-${turno}${c}`);
+        }
     }
     return slots;
 }

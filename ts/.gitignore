@@ -2,3 +2,7 @@ node_modules/
 tools/out/
 *.db
 .env
+.pglite/
+.pglite.lock
+.pglite-*.lock
+.pglite-*/

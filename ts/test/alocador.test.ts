@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { AlocadorService } from "../src/motor/alocador.service.ts";
 import { carregarBase2026_2 } from "../src/seed/seeder.ts";
 import type { Alocacao, Sala, Turma } from "../src/shared/tipos.ts";
+import { semTransacao } from "./helpers.ts";
 
 describe("AlocadorService - Integração do Motor de Busca com Repositórios", () => {
     test("gerarAlocacao aloca base 2026.2 e retorna resumo completo", async () => {
@@ -30,7 +31,7 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new AlocadorService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new AlocadorService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const resultado = await service.gerarAlocacao({ semestre: "2026.2", persistir: true });
 
         assert.equal(resultado.sucesso, true);
@@ -66,7 +67,7 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new AlocadorService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new AlocadorService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const resultado = await service.gerarAlocacao({ persistir: false });
 
         assert.equal(resultado.persistido, false);
@@ -79,7 +80,7 @@ describe("AlocadorService - Integração do Motor de Busca com Repositórios", (
             listarPorSemestre: async () => [],
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new AlocadorService(mockTurmaRepo);
+        const service = new AlocadorService(mockTurmaRepo, undefined, undefined, semTransacao);
         await assert.rejects(
             () => service.gerarAlocacao({ semestre: "2099.1" }),
             /Nenhuma turma encontrada no banco para o semestre '2099.1'/

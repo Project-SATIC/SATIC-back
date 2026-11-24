@@ -2,6 +2,7 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { RemanejamentoService } from "../src/motor/remanejamento.service.ts";
 import type { Alocacao, Sala, Turma } from "../src/shared/tipos.ts";
+import { semTransacao } from "./helpers.ts";
 
 describe("RemanejamentoService - Validação e Confirmação de Movimentos", () => {
     const salaPequena: Sala = {
@@ -54,7 +55,7 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
             listarPorSemestre: async () => [],
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const res = await service.validar({ turmaId: 10, salaId: 1 });
 
         assert.equal(res.valida, false);
@@ -75,7 +76,7 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
             listarPorSemestre: async () => [],
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const res = await service.validar({ turmaId: 10, salaId: 2, horario: "24M12" });
 
         assert.equal(res.valida, true);
@@ -100,7 +101,7 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const res = await service.confirmar({ turmaId: 10, salaId: 1 });
 
         assert.equal(res.sucesso, false);
@@ -121,15 +122,15 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
         let novaSalaId = -1;
         let novoHorario = "";
 
+        // A alocação atual da turma vem na listagem do semestre, como no banco
         const mockAlocacaoRepo = {
-            listarPorSemestre: async () => [],
-            buscarPorTurmaId: async () => ({
+            listarPorSemestre: async () => [{
                 id: 99,
                 turma: turmaGrande,
                 sala: salaPequena,
                 horarioCodigo: "24M12",
                 status: "RASCUNHO",
-            }),
+            }],
             atualizarSalaEHorario: async (id: number, sId: number, h: string) => {
                 alocacaoAtualizadaId = id;
                 novaSalaId = sId;
@@ -138,7 +139,7 @@ describe("RemanejamentoService - Validação e Confirmação de Movimentos", () 
             },
         } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo);
+        const service = new RemanejamentoService(mockTurmaRepo, mockSalaRepo, mockAlocacaoRepo, semTransacao);
         const res = await service.confirmar({
             turmaId: 10,
             salaId: 2,

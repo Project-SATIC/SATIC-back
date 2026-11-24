@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getClient, query } from "./connection.ts";
+import { comTransacao, query } from "./connection.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,23 +49,19 @@ export async function executarMigrations(): Promise<MigrationResult[]> {
         const caminhoArquivo = path.join(MIGRATIONS_DIR, arquivo);
         const conteudoSql = await fs.readFile(caminhoArquivo, "utf-8");
 
-        const client = await getClient();
         try {
-            await client.query("BEGIN;");
-            await client.query(conteudoSql);
-            await client.query("INSERT INTO _migrations (nome) VALUES ($1);", [arquivo]);
-            await client.query("COMMIT;");
+            await comTransacao(async (db) => {
+                await db.query(conteudoSql);
+                await db.query("INSERT INTO _migrations (nome) VALUES ($1);", [arquivo]);
+            });
 
             resultados.push({ arquivo, status: "aplicada" });
             console.log(`[Migrations] Aplicada com sucesso: ${arquivo}`);
         } catch (err: unknown) {
-            await client.query("ROLLBACK;");
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`[Migrations] Falha ao aplicar ${arquivo}:`, msg);
             resultados.push({ arquivo, status: "erro", mensagem: msg });
             throw new Error(`Erro na migration ${arquivo}: ${msg}`);
-        } finally {
-            client.release();
         }
     }
 
@@ -73,7 +69,7 @@ export async function executarMigrations(): Promise<MigrationResult[]> {
 }
 
 export async function resetarBanco(): Promise<void> {
-    console.log("[Migrations] Limpando todas as tabelas do SATIC...");
+    console.log("[Migrations] Limpando todas as tabelas e funções do SATIC...");
     await query(`
         DROP TABLE IF EXISTS alocacao CASCADE;
         DROP TABLE IF EXISTS professor_turma CASCADE;
@@ -83,6 +79,7 @@ export async function resetarBanco(): Promise<void> {
         DROP TABLE IF EXISTS sala CASCADE;
         DROP TABLE IF EXISTS professor CASCADE;
         DROP TABLE IF EXISTS _migrations CASCADE;
+        DROP FUNCTION IF EXISTS satic_atualizar_alocacao_timestamp() CASCADE;
     `);
     console.log("[Migrations] Banco resetado.");
 }

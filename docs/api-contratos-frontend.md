@@ -10,14 +10,27 @@ Esta documentação descreve todos os endpoints da API REST do SATIC, schemas de
 * **Headers Padrão**:
   * `Content-Type: application/json`
   * `Accept: application/json`
-* **CORS**: Habilitado para qualquer origem em ambiente de desenvolvimento (permite requisições de `localhost:3000`, `localhost:5173`, etc.).
-* **Padrão de Erro Genérico**:
+* **CORS**: Sem configuração, aceita qualquer origem (desenvolvimento local, inclusive o servidor do front em `http://127.0.0.1:8040`). Para restringir, defina `CORS_ORIGIN` no `.env` com as origens separadas por vírgula (ex: `CORS_ORIGIN=http://127.0.0.1:8040,http://localhost:8040`).
+* **Padrão de Erro Genérico**: `erro` sempre presente e legível para o usuário; `detalhes` só quando houver informação técnica extra.
   ```json
   {
-    "erro": "Descrição do erro",
-    "detalhes": "Mensagem técnica ou detalhe adicional"
+    "erro": "turmaId é obrigatório e deve ser um inteiro positivo",
+    "detalhes": "opcional"
   }
   ```
+* **Códigos HTTP usados**:
+
+  | Código | Quando |
+  |---|---|
+  | `200` | Sucesso (inclui `/validar` com `valida: false`: a validação em si funcionou) |
+  | `400` | JSON malformado, corpo que não é objeto, id não inteiro/positivo, horário fora do padrão SIGAA, `status` ou `semestre` inválidos |
+  | `404` | Turma, sala, professor ou disciplina inexistente; semestre sem turmas em `/gerar` |
+  | `409` | `/confirmar` recusado por regra de negócio, ou violação de integridade do banco |
+  | `503` | PostgreSQL fora do ar ou inacessível (`erro: "Banco de dados indisponível"`) |
+  | `500` | Erro inesperado |
+
+* **IDs**: `turmaId`, `salaId` e `:id` aceitam número ou string numérica (ex: valor lido de um `data-attribute`).
+* **Horários**: notação SIGAA (`"35T34"`, `"2T56 6T12"`). O servidor normaliza maiúsculas e espaços e devolve o horário normalizado.
 
 ---
 
@@ -25,6 +38,7 @@ Esta documentação descreve todos os endpoints da API REST do SATIC, schemas de
 
 ### `GET /api/health`
 Verifica a integridade do serviço e o status da conexão com o banco PostgreSQL.
+Responde **200** com `status: "ok"` quando o banco responde e **503** com `status: "degradado"` e `database.conectado: false` quando a API está no ar mas o banco não. O corpo tem o mesmo formato nos dois casos.
 
 * **Resposta 200**:
   ```json
@@ -104,6 +118,7 @@ Retorna as turmas ofertadas, com suas disciplinas e professores vinculados (incl
       "vagas": 45,
       "matriculados": 42,
       "requerAlocacaoIc": true,
+      "aulasSemanais": 4,
       "professores": [
         {
           "matriculaSiape": "2024389",
@@ -178,7 +193,12 @@ Lista as disciplinas da matriz curricular.
 Retorna as alocações físicas registradas no banco de dados.
 
 * **Query Parameters (Opcionais)**:
-  * `semestre`: Filtra alocações por semestre da turma (ex: `?semestre=2026.2`).
+  * `semestre`: Filtra alocações por semestre da turma (ex: `?semestre=2026.2`). Formato `AAAA.S`; outro formato responde 400.
+* **Turma embutida**: cada alocação traz a turma completa, com `professores` (e suas `indisponibilidades`) e `cargaHorariaPorDocente`, no mesmo formato de `GET /api/turmas`.
+* **Status possíveis** (no máximo uma alocação por turma):
+  * `RASCUNHO`: proposta do motor. É substituída a cada `/gerar` com `persistir: true`.
+  * `DEFINITIVA`: remanejamento confirmado pela secretaria via `/confirmar`. Por padrão sobrevive a novas gerações.
+  * `EXTERNA_FIXA`: turma de outro instituto que ocupa sala do pool do IC (ex: `IF0001-05` na `Sala 207 BL12`). Gravada pelo seed e nunca apagada pelo `/gerar`.
 * **Resposta 200**:
   ```json
   [
@@ -189,8 +209,16 @@ Retorna as alocações físicas registradas no banco de dados.
         "codigoTurma": "01",
         "semestre": "2026.2",
         "disciplina": { "codigo": "COMP360", "nome": "PROGRAMAÇÃO 1", "cargaHoraria": 60, "exigeLaboratorio": true },
+        "professores": [
+          { "matriculaSiape": "2024389", "nome": "RANILSON OSCAR ARAUJO PAIVA", "indisponibilidades": [] }
+        ],
+        "cargaHorariaPorDocente": { "2024389": 60 },
+        "cursosOfertados": "CC",
+        "horarioSigaa": "35M34",
         "vagas": 45,
-        "matriculados": 42
+        "matriculados": 42,
+        "requerAlocacaoIc": true,
+        "aulasSemanais": 4
       },
       "sala": {
         "id": 6,
@@ -222,9 +250,13 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
     "semSalas": ["Auditório CEPETEC"]
   }
   ```
-  * `semestre` (string, opcional): Padrão `"2026.2"`.
+  * `semestre` (string, opcional): Padrão `"2026.2"`. Formato `AAAA.S`.
   * `persistir` (boolean, opcional): Padrão `true`. Se `false`, atua em modo *preview* (simulação sem gravar no banco).
   * `semSalas` (string[], opcional): Lista de nomes de salas a desconsiderar no cálculo.
+  * `limiteNos` (inteiro, opcional): Limite de nós da busca, de 1 a 600.000. Padrão: 300.000, o mesmo do motor Java.
+  * `preservarDefinitivas` (boolean, opcional): Padrão `true`. As alocações `DEFINITIVA` entram no motor como fixas e não são recalculadas. Com `false`, elas são descartadas e o motor decide de novo a sala dessas turmas.
+
+* **O que acontece com `persistir: true`**: leitura, busca e gravação rodam numa única transação, com lock do semestre. São apagadas só as alocações `RASCUNHO` (e as `DEFINITIVA`, se `preservarDefinitivas: false`) e gravadas as novas. As reservas `EXTERNA_FIXA` nunca são apagadas. Se algo falhar, nada muda no banco.
 
 * **Resposta 200**:
   ```json
@@ -237,14 +269,22 @@ Aciona o motor de busca em espaço de estados (MRV + Best-Fit) para calcular a p
       "totalTurmas": 86,
       "alocadas": 86,
       "pendentes": 0,
-      "podas": 124,
-      "nosVisitados": 86,
-      "tempoMs": 14.8
+      "preservadas": 2,
+      "podas": 631,
+      "nosVisitados": 87,
+      "tempoMs": 4
     },
     "alocacoes": [ ... ],
-    "pendentes": []
+    "preservadas": [ ... ],
+    "pendentes": [],
+    "horariosInvalidos": []
   }
   ```
+  * `alocacoes`: o que o motor decidiu nesta execução (status `RASCUNHO`; com `persistir: true`, já vêm com `id`).
+  * `preservadas`: alocações `EXTERNA_FIXA` e `DEFINITIVA` mantidas e usadas como bloqueios pelo motor. Para desenhar a grade completa, junte `alocacoes` com `preservadas`, ou recarregue `GET /api/alocacoes`.
+  * `pendentes`: turmas que o motor não conseguiu alocar.
+  * `horariosInvalidos`: chaves (`"COMP360-01"`) de turmas cujo `horarioSigaa` no banco é ilegível. Elas ficam fora da busca e também aparecem em `pendentes`.
+* **Resposta 404**: semestre sem turmas cadastradas (rode o seed).
 
 ---
 
@@ -260,8 +300,12 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
   }
   ```
   * `turmaId` (number, obrigatório): ID da turma.
-  * `salaId` (number, obrigatório): ID da sala pretendida.
-  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o `horarioSigaa` original da turma.
+  * `salaId` (number, **opcional** desde 19/11): sala pretendida. Se omitido, o servidor **mantém a sala atual** se ela continuar válida no novo horário; se não, **sugere a melhor sala livre** (Best-Fit, sala comum antes de laboratório para teóricas). A resposta traz `sala` e `origemSala` (`"pedida"`, `"mantida"` ou `"sugerida"`); sem sala possível, `salaId`/`sala` vêm `null`.
+  * `horario` (string, opcional): Horário pretendido. Se omitido, usa o horário atual da alocação (ou o `horarioSigaa` da turma). Horário fora da notação SIGAA responde 400.
+  * Além de RN-01 a RN-04, sala e escopo, o diagnóstico inclui **`FORMATO`** (número de aulas por semana diferente do cadastro, ou mais de um bloco no mesmo dia) e **`TURNO`** (turno fora do curso: CC/EC manhã e tarde, IA noite). Ver [`modelo-aulas-e-motor-de-sugestoes.md`](./modelo-aulas-e-motor-de-sugestoes.md).
+  * O semestre usado na checagem é sempre o da própria turma.
+  * As checagens RN-01 (choque de docente, inclusive co-docentes) e RN-02 (indisponibilidade) usam os docentes cadastrados no banco para a turma movida e para todas as turmas já alocadas no semestre.
+* **Respostas de erro**: 400 (payload inválido) e 404 (turma ou sala inexistente).
 
 * **Resposta 200 (Válida)**:
   ```json
@@ -269,6 +313,15 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
     "valida": true,
     "turmaId": 12,
     "salaId": 3,
+    "sala": {
+      "id": 3,
+      "nome": "Sala 04 IC",
+      "capacidade": 45,
+      "tipoEspaco": "Sala",
+      "bloco": "IC",
+      "alocavelIc": true
+    },
+    "origemSala": "pedida",
     "horario": "35T34",
     "violacoes": []
   }
@@ -280,6 +333,15 @@ Permite ao front-end testar se mover um card para determinado horário/sala viol
     "valida": false,
     "turmaId": 12,
     "salaId": 3,
+    "sala": {
+      "id": 3,
+      "nome": "Sala 04 IC",
+      "capacidade": 45,
+      "tipoEspaco": "Sala",
+      "bloco": "IC",
+      "alocavelIc": true
+    },
+    "origemSala": "pedida",
     "horario": "35T34",
     "violacoes": [
       {
@@ -309,6 +371,8 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
     "status": "DEFINITIVA"
   }
   ```
+  * `status` (opcional): `RASCUNHO`, `DEFINITIVA` ou `EXTERNA_FIXA`; qualquer outro valor responde 400. Se omitido, vale `DEFINITIVA`. A exceção é mover uma reserva `EXTERNA_FIXA`, que mantém esse status.
+  * Validação e gravação rodam na mesma transação, com lock do semestre. Dois usuários confirmando ao mesmo tempo não conseguem colocar turmas na mesma sala e horário: o segundo recebe 409.
 
 * **Resposta 200 (Sucesso)**:
   ```json
@@ -341,14 +405,130 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
 
 ---
 
+### `POST /api/alocacoes/confirmar-lote` ("Confirmar tudo" do rascunho)
+Aplica de uma vez as mudanças acumuladas no navegador. Tudo roda numa transação, com lock de cada semestre envolvido. O servidor valida o **estado final**: aplica todos os movimentos em memória, checa cada um contra esse resultado, tira os inválidos e repete até estabilizar. Só os aceitos são gravados. Por isso **trocas** funcionam (A vai para a sala de B e B para a de A), e quem dependia de um movimento recusado também é recusado. Se a mesma turma aparece mais de uma vez, vale o último movimento.
+
+* **Payload**:
+  ```json
+  {
+    "movimentos": [
+      { "turmaId": 12, "horario": "3M3456" },
+      { "turmaId": 30, "salaId": 4, "horario": "24T12" },
+      { "turmaId": 41, "acao": "remover" }
+    ]
+  }
+  ```
+  * Cada item aceita os mesmos campos de `/confirmar` (`salaId` opcional, `horario`, `status`) e `acao`: `"mover"` (padrão) ou `"remover"`, que tira a turma da grade e a deixa pendente.
+  * No máximo 200 movimentos. Um item malformado responde **400** para o lote inteiro, e nada é gravado.
+* **Resposta**: **200** se todos foram aceitos, **207** se só parte foi, **409** se nenhum foi.
+  ```json
+  {
+    "aceitos": 2,
+    "recusados": 1,
+    "resultados": [
+      { "indice": 0, "turmaId": 12, "sucesso": true, "mensagem": "...", "alocacao": { ... }, "origemSala": "mantida" },
+      { "indice": 1, "turmaId": 30, "sucesso": false, "mensagem": "...", "violacoes": [{ "regra": "SALA", "mensagem": "..." }] },
+      { "indice": 2, "turmaId": 41, "sucesso": true, "mensagem": "Turma retirada da grade; agora está pendente." }
+    ]
+  }
+  ```
+
+---
+
+### `GET /api/alocacoes/conflitos?semestre=2026.2`
+Conflitos e pendências do semestre, calculados pelo servidor com o mesmo validador.
+
+* **Resposta 200**:
+  ```json
+  {
+    "semestre": "2026.2",
+    "conflitos": [
+      { "turmaId": 12, "turma": "COMP360-01", "status": "RASCUNHO", "violacoes": [{ "regra": "SALA", "mensagem": "..." }] }
+    ],
+    "pendentes": [
+      { "turmaId": 50, "turma": "COMP399-01", "motivo": "sem sala" }
+    ]
+  }
+  ```
+  * `motivo` da pendência: `"sem sala"`, `"sem docente"` ou `"sem horário"`.
+
+---
+
+### `POST /api/alocacoes/sugestoes` (motor de horário + sala)
+Roda o motor de sugestões para os conflitos e pendências. **Não grava nada.** Para aplicar uma sugestão, o front envia as `mudancas` dela para `/confirmar-lote`. Turmas `DEFINITIVA` e `EXTERNA_FIXA` nunca são alteradas.
+
+* **Payload** (todos opcionais):
+  ```json
+  {
+    "semestre": "2026.2",
+    "alvos": [12, 30],
+    "permitirMudarFormato": [30],
+    "limiteNos": 200000,
+    "maxAlternativas": 3,
+    "movimentos": [{ "turmaId": 30, "salaId": 13, "horario": "46M12" }]
+  }
+  ```
+  * `movimentos`: o rascunho ainda não confirmado, no mesmo formato do `/confirmar-lote`. Ele é aplicado **só em memória** antes da busca, para o motor enxergar os conflitos criados no navegador. Nada é gravado.
+  * `alvos`: turmas a resolver. Padrão: todas as em conflito e as pendentes que só não têm sala.
+  * `permitirMudarFormato`: turmas cujo formato o motor pode mudar (2+2 → 4 num dia etc.). A busca fica mais lenta.
+  * `limiteNos`: 1 a 1.000.000 (padrão 200.000).
+* **Resposta 200**:
+  ```json
+  {
+    "semestre": "2026.2",
+    "conflitos": [ ... ],
+    "pendentes": [ ... ],
+    "alvos": [12, 30],
+    "plano": {
+      "descricao": "COMP360-01: Sala 02 IC → Sala 04 IC; COMP362-01: 24T12 · Sala 03 IC → 24T34 · Sala 207 BL12",
+      "custo": { "turmasAlteradas": 2, "mudancasDeHorario": 1, "mudancasDeSala": 2, "pontos": 12 },
+      "mudancas": [
+        {
+          "turmaId": 12, "turma": "COMP360-01", "tipo": "sala",
+          "de":   { "salaId": 1, "sala": "Sala 02 IC", "horario": "24M34" },
+          "para": { "salaId": 3, "sala": "Sala 04 IC", "horario": "24M34" }
+        }
+      ]
+    },
+    "alternativasPorTurma": { "12": [ { "descricao": "...", "custo": { ... }, "mudancas": [ ... ] } ] },
+    "naoResolvidos": [],
+    "nosVisitados": 3037,
+    "limiteAtingido": false,
+    "tempoMs": 280
+  }
+  ```
+  * `tipo` da mudança: `"sala"`, `"horario"`, `"horario+sala"` ou `"nova"` (turma pendente que ganha sala).
+  * `plano`: tenta resolver todas as turmas juntas. `alternativasPorTurma`: até `maxAlternativas` opções por turma, cada uma considerando as demais turmas como estão, ordenadas por custo (horário pesa 10, sala pesa 1).
+  * `naoResolvidos`: turmas sem solução dentro do limite, ou que exigem decisão manual (por exemplo, duas confirmadas em conflito, ou turma sem docente).
+
+---
+
+### `GET /shared/{grade,horario-sigaa,tipos,validador}.js`
+O parser SIGAA, o modelo de grade e o validador do servidor, como **módulos ES** para o navegador. Com eles o front valida um movimento na hora com o mesmo código da confirmação. CORS liberado.
+
+```js
+const API = "http://localhost:3001";
+const { diagnosticarViolacoes } = await import(`${API}/shared/validador.js`);
+const { RELOGIO_AULAS, CURSOS, montarHorarioSigaa, blocosDoHorario } = await import(`${API}/shared/grade.js`);
+```
+
+---
+
 ## 4. Guia de Integração do Front-end
 
 ### Fluxo de Carregamento da Grade
+0. (Opcional) `GET /api/health`: se responder 503, mostrar aviso de "banco indisponível" em vez de uma grade vazia.
 1. Fazer `GET /api/salas?alocavel_ic=true` para renderizar as colunas/linhas das salas disponíveis.
 2. Fazer `GET /api/turmas?semestre=2026.2` para obter os dados completos das turmas.
 3. Fazer `GET /api/alocacoes?semestre=2026.2` para posicionar os cards já alocados na grade.
 
-### Fluxo de Drag-and-Drop (Arrastar e Soltar)
+### Fluxo de Drag-and-Drop com rascunho (combinado em 19/11)
+1. Ao soltar aulas numa nova posição, o front monta o novo horário (`montarHorarioSigaa`) e valida **na hora** com `/shared/validador.js`, sem chamar o servidor. Se não houver problema, a mudança entra no rascunho com o contador "N alterações não salvas".
+2. **Confirmar tudo** → `POST /api/alocacoes/confirmar-lote` com o rascunho. Os itens aceitos saem do rascunho; os recusados ficam marcados com as `violacoes`.
+3. **Descartar** → recarrega `GET /api/alocacoes` e limpa o rascunho.
+4. **Resolver via motor** (Central de Conflitos) e **Gerar grade** → `POST /api/alocacoes/sugestoes`. Aceitar uma sugestão coloca as `mudancas` dela no rascunho.
+
+### Fluxo de Drag-and-Drop (movimento único, versão anterior)
 1. **Durante o arraste / soltura temporária**:
    * O front chama `POST /api/alocacoes/validar` enviando `{ turmaId, salaId, horario }`.
    * Se `valida === true`: a interface destaca o card em verde.
@@ -357,3 +537,5 @@ O servidor valida novamente todas as regras. Se aprovado, **atualiza exclusivame
    * O front chama `POST /api/alocacoes/confirmar`.
    * Se `status 200`: atualiza o estado local e exibe toast de sucesso.
    * Se `status 409`: exibe modal de erro listando as regras que impediram a movimentação e reverte o card para a posição anterior.
+   * Se `status 400`/`404`: bug do cliente ou dado desatualizado. Mostrar `erro` e recarregar a grade.
+   * Se `status 503`: banco fora do ar. Manter o card na posição anterior e avisar o usuário.

@@ -4,21 +4,24 @@ import pg from "pg";
 const { Pool } = pg;
 
 function createPoolConfig(): pg.PoolConfig {
+    // PGPOOL_MAX: tamanho do pool (padrão 10). Os testes usam 1 porque o PGlite tem uma única sessão.
+    const comuns: pg.PoolConfig = {
+        max: Number(process.env.PGPOOL_MAX || 10),
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+    };
+
     if (process.env.DATABASE_URL) {
-        return {
-            connectionString: process.env.DATABASE_URL,
-        };
+        return { ...comuns, connectionString: process.env.DATABASE_URL };
     }
 
     return {
+        ...comuns,
         host: process.env.PGHOST || "localhost",
         port: Number(process.env.PGPORT || 5432),
         user: process.env.PGUSER || "postgres",
         password: process.env.PGPASSWORD || "postgres",
         database: process.env.PGDATABASE || "satic",
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
     };
 }
 
@@ -45,6 +48,51 @@ export async function query<R extends pg.QueryResultRow = pg.QueryResultRow>(
 export async function getClient(): Promise<pg.PoolClient> {
     const currentPool = getPool();
     return currentPool.connect();
+}
+
+/**
+ * Qualquer objeto capaz de executar SQL: o pool (padrão) ou um cliente dentro de uma transação.
+ * Os repositórios recebem um Executor opcional para participar de transações abertas pelos serviços.
+ */
+export interface Executor {
+    query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, params?: unknown[]): Promise<pg.QueryResult<R>>;
+}
+
+export const executorPadrao: Executor = { query };
+
+/** Abre uma transação, executa `fn` com o cliente dela e faz COMMIT (ou ROLLBACK em caso de erro). */
+export type ExecutorTransacional = <T>(fn: (db: Executor) => Promise<T>) => Promise<T>;
+
+/** Executa `fn` dentro de BEGIN/COMMIT, com ROLLBACK em caso de erro. */
+export async function comTransacao<T>(fn: (db: Executor) => Promise<T>): Promise<T> {
+    const client = await getClient();
+    let conexaoQuebrada = false;
+    try {
+        await client.query("BEGIN;");
+        const resultado = await fn(client as Executor);
+        await client.query("COMMIT;");
+        return resultado;
+    } catch (err) {
+        await client.query("ROLLBACK;").catch(() => {
+            conexaoQuebrada = true;
+        });
+        throw err;
+    } finally {
+        // Conexão que nem o ROLLBACK aceita é descartada em vez de voltar ao pool
+        client.release(conexaoQuebrada);
+    }
+}
+
+export const SQL_LOCK_SEMESTRE = "SELECT pg_advisory_xact_lock(hashtext($1));";
+
+/**
+ * Serializa, dentro da transação atual, as escritas de alocação de um semestre: geração (`/gerar`)
+ * e remanejamentos (`/confirmar`) do mesmo semestre nunca rodam em paralelo, inclusive entre
+ * processos diferentes da API. O lock é liberado sozinho no COMMIT/ROLLBACK.
+ * Leituras feitas depois do lock já enxergam o que a transação concorrente gravou (READ COMMITTED).
+ */
+export async function bloquearSemestre(db: Executor, semestre: string): Promise<void> {
+    await db.query(SQL_LOCK_SEMESTRE, [`satic:alocacao:${semestre}`]);
 }
 
 export async function testConnection(): Promise<{ ok: boolean; message?: string }> {

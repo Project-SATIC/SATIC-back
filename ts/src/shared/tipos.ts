@@ -62,6 +62,11 @@ export interface Turma {
     matriculados: number;
     /** false para turmas ministradas em outros institutos (CTEC/IF). */
     requerAlocacaoIc: boolean;
+    /**
+     * Aulas de 50 min por semana. Fica no cadastro para a turma continuar sabendo quantas aulas
+     * precisa mesmo quando está sem horário (pendente). Ausente: vale o número de aulas do horário.
+     */
+    aulasSemanais?: number | null;
 }
 
 export interface Alocacao {
@@ -72,6 +77,7 @@ export interface Alocacao {
     horarioCodigo: string;
     status: StatusAlocacao;
     dataGeracao?: string | null;
+    atualizadoEm?: string | null;
 }
 
 /** Demanda efetiva usada no RN-03: matriculados > 0 ? matriculados : vagas. */
