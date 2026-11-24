@@ -6,8 +6,10 @@ import { criarSalasRouter, type RepoSalasRota } from "./routes/salas.routes.ts";
 import { criarProfessoresRouter, type RepoProfessoresRota } from "./routes/professores.routes.ts";
 import { criarTurmasRouter, type RepoTurmasRota } from "./routes/turmas.routes.ts";
 import { criarAlocacoesRouter, type ServicosAlocacao } from "./routes/alocacoes.routes.ts";
+import { criarAuditoriaRouter, type RepoAuditoriaRota } from "./routes/auditoria.routes.ts";
 import { sharedRouter } from "./routes/shared.routes.ts";
 import { ErroHttp } from "../erros.ts";
+import { logger, middlewareContextoELogs } from "../logger.ts";
 import { FormatoHorarioInvalidoError } from "../shared/horario-sigaa.ts";
 
 export interface OpcoesApp {
@@ -17,6 +19,7 @@ export interface OpcoesApp {
     salasRepo?: RepoSalasRota;
     disciplinasRepo?: RepoDisciplinasRota;
     professoresRepo?: RepoProfessoresRota;
+    auditoriaRepo?: RepoAuditoriaRota;
     testConnection?: VerificadorBanco;
 }
 
@@ -74,6 +77,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
     const app = express();
 
     app.use(cors(opcoesCors()));
+    app.use(middlewareContextoELogs);
     app.use(express.json({ limit: "1mb" }));
 
     // Rotas da API
@@ -83,6 +87,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
     app.use("/api/professores", criarProfessoresRouter(opcoes.professoresRepo));
     app.use("/api/turmas", criarTurmasRouter(opcoes.turmasRepo));
     app.use("/api/alocacoes", criarAlocacoesRouter(opcoes.alocacoes));
+    app.use("/api/auditoria", criarAuditoriaRouter(opcoes.auditoriaRepo));
 
     // Parser SIGAA e validador compartilhados com o front (módulos ES)
     app.use("/shared", sharedRouter);
@@ -101,6 +106,8 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
                     "/api/professores",
                     "/api/turmas",
                     "/api/alocacoes",
+                    "/api/alocacoes/jobs",
+                    "/api/auditoria",
                     "/shared/grade.js",
                     "/shared/validador.js",
                     "/shared/horario-sigaa.js",
@@ -131,7 +138,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
         }
         const emProducao = process.env.NODE_ENV === "production";
         if (isBancoIndisponivel(err)) {
-            console.error("[SATIC-API] PostgreSQL indisponível:", mensagemDe(err));
+            logger.error("PostgreSQL indisponível", { erro: mensagemDe(err) });
             res.status(503).json(emProducao ? { erro: "Banco de dados indisponível" } : { erro: "Banco de dados indisponível", detalhes: mensagemDe(err) });
             return;
         }
@@ -143,7 +150,7 @@ export function criarApp(opcoes: OpcoesApp = {}): Express {
             res.status(400).json({ erro: "Dados inválidos para o banco de dados", detalhes: mensagemDe(err) });
             return;
         }
-        console.error("[SATIC-API] Erro não tratado:", err);
+        logger.error("Erro não tratado na requisição", { erro: mensagemDe(err) });
         res.status(500).json(emProducao ? { erro: "Erro interno no servidor" } : { erro: "Erro interno no servidor", detalhes: mensagemDe(err) });
     });
 

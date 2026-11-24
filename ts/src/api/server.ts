@@ -1,28 +1,50 @@
 import "dotenv/config";
 import { criarApp } from "./app.ts";
-import { closePool, testConnection } from "../db/connection.ts";
+import { closePool, query, testConnection } from "../db/connection.ts";
+import { executarMigrations } from "../db/migrator.ts";
+import { logger } from "../logger.ts";
+import { AlocadorService } from "../motor/alocador.service.ts";
+import { executarSeed } from "../seed/db-seeder.ts";
 
 const PORT = Number(process.env.PORT || 3001);
 const app = criarApp();
 
+async function inicializarBancoSeConfigurado(): Promise<void> {
+    if (process.env.AUTO_MIGRATE === "true") {
+        logger.info("Executando migrations automáticas (AUTO_MIGRATE=true)...");
+        await executarMigrations();
+    }
+    if (process.env.AUTO_SEED === "true") {
+        const res = await query<{ total: string }>("SELECT COUNT(*)::text AS total FROM turma;");
+        if (Number(res.rows[0]?.total ?? 0) === 0) {
+            logger.info("Banco vazio detectado (AUTO_SEED=true). Populando seed 2026.2 e gerando grade inicial...");
+            await executarSeed();
+            await new AlocadorService().gerarAlocacao({ semestre: "2026.2", persistir: true });
+        }
+    }
+}
+
 async function startServer(): Promise<void> {
-    console.log("[SATIC-SERVER] Iniciando servidor Express...");
+    logger.info("Iniciando servidor Express SATIC-back...");
     const conn = await testConnection();
     if (conn.ok) {
-        console.log(`[SATIC-SERVER] PostgreSQL: ${conn.message}`);
+        logger.info("Conexão com PostgreSQL estabelecida", { detalhe: conn.message });
+        await inicializarBancoSeConfigurado();
     } else {
-        console.warn(`[SATIC-SERVER] AVISO PostgreSQL: ${conn.message}`);
-        console.warn("[SATIC-SERVER] O servidor responderá requisições, mas operações de banco exigirão PostgreSQL ativo.");
+        logger.warn("PostgreSQL indisponível na inicialização", { detalhe: conn.message });
     }
 
     const server = app.listen(PORT, () => {
-        console.log(`[SATIC-SERVER] Servidor rodando em http://localhost:${PORT}`);
-        console.log(`[SATIC-SERVER] Health check: http://localhost:${PORT}/api/health`);
+        logger.info("Servidor HTTP pronto", {
+            porta: PORT,
+            url: `http://localhost:${PORT}`,
+            healthCheck: `http://localhost:${PORT}/api/health`,
+        });
     });
 
     server.on("error", (err: NodeJS.ErrnoException) => {
         const motivo = err.code === "EADDRINUSE" ? `porta ${PORT} já está em uso (defina PORT no .env)` : err.message;
-        console.error(`[SATIC-SERVER] Não foi possível iniciar: ${motivo}`);
+        logger.error("Não foi possível iniciar o servidor HTTP", { motivo, codigo: err.code });
         process.exit(1);
     });
 
@@ -31,7 +53,7 @@ async function startServer(): Promise<void> {
     const encerrar = (sinal: string) => {
         if (encerrando) return;
         encerrando = true;
-        console.log(`[SATIC-SERVER] ${sinal} recebido, encerrando...`);
+        logger.info("Sinal de encerramento recebido", { sinal });
         server.close(() => {
             closePool().finally(() => process.exit(0));
         });

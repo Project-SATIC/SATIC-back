@@ -370,8 +370,18 @@ export class TurmaRepository {
             if (aloc.rows.some((r) => r.status === "EXTERNA_FIXA")) {
                 throw new ErroConflito("Turma vinculada a uma reserva EXTERNA_FIXA de outro instituto não pode ser removida");
             }
-            const res = await tx.query("DELETE FROM turma WHERE id = $1;", [id]);
-            return (res.rowCount ?? 0) > 0;
+            const res = await tx.query<{ semestre: string }>(
+                "DELETE FROM turma WHERE id = $1 RETURNING semestre;",
+                [id],
+            );
+            const removeu = (res.rowCount ?? 0) > 0;
+            if (removeu && res.rows[0]?.semestre) {
+                await tx.query(
+                    "UPDATE semestre_publicacao SET publicada = FALSE WHERE semestre = $1 AND publicada = TRUE;",
+                    [res.rows[0].semestre],
+                ).catch(() => undefined);
+            }
+            return removeu;
         };
         return db ? exec(db) : comTransacao(exec);
     }

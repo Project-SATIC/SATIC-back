@@ -94,7 +94,7 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         await pglite.close();
     });
 
-    test("migrations 001 a 005 aplicam e são idempotentes", async () => {
+    test("migrations 001 a 006 aplicam e são idempotentes", async () => {
         const r1 = await m.migrator.executarMigrations();
         assert.deepEqual(r1.map((r) => [r.arquivo, r.status]), [
             ["001_criar_schema_inicial.sql", "aplicada"],
@@ -102,6 +102,7 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
             ["003_aulas_semanais_e_curso_ia.sql", "aplicada"],
             ["004_auditoria_alocacao.sql", "aplicada"],
             ["005_campos_espacos_preferencias_publicacao.sql", "aplicada"],
+            ["006_historico_auditoria.sql", "aplicada"],
         ]);
         const r2 = await m.migrator.executarMigrations();
         assert.ok(r2.every((r) => r.status === "ja_executada"));
@@ -494,7 +495,7 @@ describe("PostgreSQL real (PGlite): migrations, seed, motor, remanejamento e API
         // Simula um banco criado só com a 001 e com duplicatas antigas
         await m.migrator.resetarBanco();
         const r = await m.migrator.executarMigrations();
-        assert.equal(r.length, 5);
+        assert.equal(r.length, 6);
         await m.conn.query("DELETE FROM _migrations WHERE nome = '002_integridade_alocacao.sql'");
         await m.conn.query(`
             ALTER TABLE alocacao DROP CONSTRAINT uq_alocacao_turma;

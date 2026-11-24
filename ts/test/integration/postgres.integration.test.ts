@@ -33,14 +33,14 @@ describe("Integração Real com PostgreSQL Externo (Migrations 001-004, CRUD, Se
         await closePool();
     });
 
-    test("1. resetarBanco e executarMigrations aplicam 001..005 de forma idempotente", async () => {
+    test("1. resetarBanco e executarMigrations aplicam 001..006 de forma idempotente", async () => {
         await resetarBanco();
         const r1 = await executarMigrations();
-        assert.equal(r1.length, 5);
+        assert.equal(r1.length, 6);
         assert.ok(r1.every((r) => r.status === "aplicada"));
 
         const r2 = await executarMigrations();
-        assert.equal(r2.length, 5);
+        assert.equal(r2.length, 6);
         assert.ok(r2.every((r) => r.status === "ja_executada"));
     });
 

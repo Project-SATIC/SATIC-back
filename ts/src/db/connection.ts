@@ -1,7 +1,10 @@
 import "dotenv/config";
+import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
+import { logger, obterContextoRequisicao } from "../logger.ts";
 
 const { Pool } = pg;
+const storageTransacao = new AsyncLocalStorage<Executor>();
 
 function createPoolConfig(): pg.PoolConfig {
     // PGPOOL_MAX: tamanho do pool (padrão 10). Os testes usam 1 porque o PGlite tem uma única sessão.
@@ -31,16 +34,26 @@ export function getPool(): pg.Pool {
     if (!pool) {
         pool = new Pool(createPoolConfig());
         pool.on("error", (err) => {
-            console.error("[PostgreSQL] Erro inesperado no cliente do pool:", err.message);
+            logger.error("Erro inesperado no cliente do pool PostgreSQL", { erro: err.message });
         });
     }
     return pool;
 }
 
+const REGEX_ESCRITA_SQL = /^\s*(INSERT|UPDATE|DELETE)\b/i;
+
 export async function query<R extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
     params?: unknown[]
 ): Promise<pg.QueryResult<R>> {
+    const txAtiva = storageTransacao.getStore();
+    if (txAtiva) {
+        return txAtiva.query<R>(text, params);
+    }
+    const ctx = obterContextoRequisicao();
+    if (ctx && REGEX_ESCRITA_SQL.test(text)) {
+        return comTransacao((db) => db.query<R>(text, params));
+    }
     const currentPool = getPool();
     return currentPool.query<R>(text, params);
 }
@@ -63,13 +76,25 @@ export const executorPadrao: Executor = { query };
 /** Abre uma transação, executa `fn` com o cliente dela e faz COMMIT (ou ROLLBACK em caso de erro). */
 export type ExecutorTransacional = <T>(fn: (db: Executor) => Promise<T>) => Promise<T>;
 
-/** Executa `fn` dentro de BEGIN/COMMIT, com ROLLBACK em caso de erro. */
+/** Executa `fn` dentro de BEGIN/COMMIT, com ROLLBACK em caso de erro. Reutiliza a transação ativa se chamado de forma aninhada. */
 export async function comTransacao<T>(fn: (db: Executor) => Promise<T>): Promise<T> {
+    const txAtiva = storageTransacao.getStore();
+    if (txAtiva) {
+        return fn(txAtiva);
+    }
     const client = await getClient();
     let conexaoQuebrada = false;
     try {
         await client.query("BEGIN;");
-        const resultado = await fn(client as Executor);
+        const ctx = obterContextoRequisicao();
+        if (ctx) {
+            await client.query(
+                "SELECT set_config('satic.autor', $1, true), set_config('satic.request_id', $2, true);",
+                [ctx.autor, ctx.requestId],
+            );
+        }
+        const execCliente = client as Executor;
+        const resultado = await storageTransacao.run(execCliente, () => fn(execCliente));
         await client.query("COMMIT;");
         return resultado;
     } catch (err) {
